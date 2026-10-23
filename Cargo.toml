@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/qlab-protocol",
+    "crates/qlab-engine",
+    "crates/qlab-core",
+    "crates/qlab-daemon",
+    "crates/qlab-ui",
+    "crates/qlab-bench",
+    "crates/qlab-license",
+    "crates/installer-win",
+    "crates/installer-tool",
+    "crates/licencias-db",
+    "crates/teatrocue-admin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+qlab-protocol = { path = "crates/qlab-protocol" }
+qlab-engine   = { path = "crates/qlab-engine" }
+qlab-core     = { path = "crates/qlab-core" }
+qlab-daemon   = { path = "crates/qlab-daemon" }
+qlab-license  = { path = "crates/qlab-license" }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+arc-swap      = "1"
+ringbuf       = "0.4"
+interprocess = "2"
+memmap2       = "0.9"
+ctrlc         = { version = "3", features = ["termination"] }
+cpal          = "0.18"
+eframe        = "0.37"
+egui_extras   = "0.37"
+egui_kittest  = "0.37"
+rfd           = "0.17"
+libc          = "0.2"
+symphonia     = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "flac", "ogg", "vorbis", "isomp4", "aac", "mkv"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+# Copia local de `symphonia-codec-aac` 0.5.5 con una sola corrección (ver vendor/symphonia-codec-aac/PARCHE-TEATROCUE.txt):
+# un cuadro AAC dañado ya no provoca un pánico (que en el programa final cierra todo) sino un error de decodificación.
+[patch.crates-io]
+symphonia-codec-aac = { path = "vendor/symphonia-codec-aac" }

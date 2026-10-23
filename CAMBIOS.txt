@@ -1,0 +1,150 @@
+﻿TeatroCue - CAMBIOS
+===================
+
+Versión del 21/10/2026, comparada con la que se instaló el 20/10/2026.
+Para actualizar, siga LEEME-ACTUALIZAR.txt. Los shows guardados se abren igual que antes;
+no hace falta cambiar nada en ellos.
+
+
+NUEVO
+-----
+
+1. Pausa con la tecla P
+   P pausa lo que está sonando. El cabezal queda quieto en la forma de onda y, al pulsar
+   P otra vez, sigue exactamente desde ese punto.
+
+2. Mover memorias arrastrándolas (como en Pro Tools)
+   En la regla de la onda, sostenga el rombo ámbar de una memoria y arrástrelo. Aparece
+   una línea roja sobre toda la onda (para alinear con una entrada musical) y un rótulo
+   con el nombre y el tiempo exacto. Al soltar queda guardada en ese punto.
+   Un clic corto sobre el rombo sigue saltando a la memoria, como antes.
+
+3. Obras completas: forma de onda de archivos de hasta 3 horas
+   Antes, un archivo muy largo daba "el archivo es demasiado largo" y no mostraba la onda.
+   Ahora se dibuja entera (1, 2 o 3 horas) y se calcula en segundo plano: mientras tanto
+   el programa responde y la cue se puede disparar.
+
+4. Aviso de audio dañado, sin ruido
+   Si una parte del archivo no se puede leer (por ejemplo, un video copiado o recuperado
+   con errores), TeatroCue avisa "Audio dañado en ...", marca esa zona en ROJO sobre la
+   onda y la deja en SILENCIO. Nunca suena ruido ni se cuelga.
+   La parte sana se reproduce normal, también si se salta hacia atrás.
+
+5. Botón "Crear copia reparada"
+   Aparece debajo de la onda cuando el archivo está dañado. Crea, junto al original, una
+   copia que llega hasta poco antes del daño, sin perder calidad (misma imagen y mismo
+   sonido). Su nombre dice hasta dónde llega, por ejemplo:
+     "mi video (reparado hasta 1h32m48s).mp4"
+   Después, "Usar la copia en esta cue" la pone en la cue. El archivo original no se toca.
+   Ojo: lo que estaba dañado no se puede recuperar; la copia simplemente termina antes.
+
+6. Nombre automático de la cue
+   Al soltar un archivo de música o video (o elegirlo con "Examinar..."), la cue toma el
+   título que trae el archivo, con el artista si lo tiene. Por ejemplo:
+     "Entrada de Basilio - Ludwig Minkus"
+   Si el archivo no trae título, se usa su nombre limpio:
+     "04 - Variacion_de_Kitri.wav"  pasa a ser  "Variacion de Kitri"
+   Un nombre que usted haya escrito a mano no se cambia nunca.
+
+7. Nombres largos que se desplazan
+   En STANDBY, en la lista de cues y en la cabecera del Inspector, un nombre que no entra
+   ya no se parte en dos líneas ni se sale del recuadro. Se desplaza de lado a lado unas
+   vueltas para que se lea entero y luego queda quieto, terminado en "...".
+   Si pasa el ratón por encima, vuelve a moverse mientras el ratón esté ahí.
+   La columna Destino (la ruta del archivo) solo se mueve con el ratón encima.
+
+8. Esta ventana de Novedades
+   Aparece sola la primera vez que se abre una versión nueva (y otra vez después de cada
+   actualización). Se cierra con "Entendido" o Esc. Para volver a verla:
+   Ayuda > Novedades de esta versión.
+
+9. Retomar desde donde se paró (para ensayos)
+   Botón "Retomar al parar" en la barra de herramientas (o menú Opciones). Encendido:
+   el ensayador dice "¡paren!", usted para con Esc (o "Parar todo") y la música queda
+   lista en ese punto; el próximo GO la retoma desde ahí, con el pre-roll del panel de
+   Memorias (Off, 2 s o 4 s) para que los bailarines agarren la cuenta.
+   El punto sirve una sola vez: cuando esa música termina, la cue vuelve a arrancar
+   desde su inicio. Al guardar el show no se guarda, y al activar el Bloqueo de función
+   (la función) se borra. Con el Bloqueo activo, parar no deja ningún punto.
+   La pausa (P) sigue igual: congela y la misma tecla hace seguir.
+
+10. Atajos de teclado a gusto de cada uno
+   Menú Opciones > Preferencias y atajos de teclado. Clic en la tecla de una orden
+   (GO, PANIC, Pausa, Marcar memoria, Bloqueo...) y pulse la nueva; cada orden puede
+   tener dos teclas. Si la tecla ya la usa otra orden, avisa y no la cambia.
+   "Restaurar" vuelve a la de fábrica. GO y PANIC siempre tienen alguna tecla.
+   El manual (F1) y la barra de abajo muestran las teclas elegidas.
+
+11. Silenciar los sonidos de Windows
+   Botón "Silenciar Windows" en la barra de herramientas (viene encendido): las
+   notificaciones y los avisos de Windows no salen por los parlantes mientras TeatroCue
+   está abierto. El audio del show no se toca. Al cerrar TeatroCue, Windows vuelve a
+   sonar como antes; si alguna salida ya estaba silenciada a mano, queda así.
+
+
+CORREGIDO
+---------
+
+12. Importar audio: convertidor y copia de CD
+   Archivo > Importar audio: convertir / copiar de CD...
+   - Convertir archivos: elija uno o varios (audio, o un video para sacarle el audio) y
+     conviértalos a WAV 16 o 24 bits, FLAC, MP3 u OGG. Opciones: calidad, frecuencia
+     (44,1 o 48 kHz), mono/estéreo e igualar el volumen entre pistas. Los originales no se
+     tocan y nunca se pisa un archivo que ya existe. Se puede agregar el resultado al show
+     como cues al terminar. Un archivo que falla no frena a los demás.
+   - Copiar de un CD (solo Windows): lee el disco, muestra las pistas con su duración, se
+     marcan las que se quieren y se les pone nombre (por defecto "Pista 01"...). Se copian
+     directo del disco a WAV (o al formato elegido). No usa internet. Si la lectora no
+     puede leer un pedacito, queda en silencio y lo avisa.
+   IMPORTANTE: la copia de CD no se pudo probar con un disco real; probarla primero con
+   un CD que no importe y avisar si algo no anda.
+
+13. Tiempo exacto en la onda
+   En Time & Loops, al hacer clic en la onda (también mientras suena) el marcador ámbar
+   muestra un rombo en la regla con su tiempo exacto, por ejemplo 01:15.50. El cursor
+   de reproducción también muestra su tiempo, abajo.
+   Ese rombo se puede agarrar y arrastrar: el tiempo del rótulo lo sigue en vivo.
+   El seguimiento de la reproducción es más claro: la parte ya sonada se tiñe de verde,
+   el punto actual es una línea verde gruesa con un triángulo en la regla y su tiempo.
+
+14. Zoom de la forma de onda (como en Pro Tools)
+   Time & Loops: botones - y + (acercar / alejar), "Todo" (el archivo entero), "Region"
+   (de Inicio a Fin) y "Seguir" (con zoom la onda acompana a la reproduccion). Con la
+   rueda: Ctrl + rueda acerca donde esta el puntero, Mayus + rueda desplaza. Con zoom
+   aparece abajo una tira con el archivo entero y la ventana visible, que se arrastra.
+   Al acercar se calcula el detalle real de ese tramo (se ven las crestas), tambien en
+   obras de horas. Se puede acercar hasta 20 milisegundos.
+
+15. Ecualizador: se oye mientras se arrastra
+   Antes el cambio de EQ se enviaba recien al soltar el mouse. Ahora se envia mientras
+   se arrastra un punto, y la pestana EQ dice "EQ aplicado: suena en vivo" (o
+   "Enviando al motor..." si todavia no llego). Con el PFL (auriculares) tambien suena
+   con el EQ de la cue y lo sigue si se lo mueve mientras se escucha.
+   Si en alguna PC el EQ no se oye: mirar ese mensaje en la pestana EQ y avisar cual dice.
+
+16. Una sola copia de TeatroCue a la vez
+   Si TeatroCue ya está abierto y se abre otro, avisa y no arranca. Dos copias se pelean
+   por la placa de sonido y por la pantalla de proyección (el video dejaba de verse).
+
+17. Esc al nombrar una memoria ya no para la función
+   Antes, pulsar Esc en el cuadro "Nombre de la memoria:" cancelaba el cuadro pero además
+   disparaba PANIC y paraba todo lo que sonaba. Ahora Esc solo cierra el cuadro.
+   Lo mismo con las ventanas de recuperar cambios y de configuración de audio: mientras
+   están abiertas, Esc no dispara PANIC. Fuera de esas ventanas, Esc sigue siendo PANIC.
+
+18. Archivos con el audio roto ya no cierran el programa
+   Un archivo dañado podía cerrar TeatroCue de golpe al leerlo. Ahora se lee lo que se
+   puede y el resto queda en silencio (ver punto 4).
+
+19. El panel de Memorias se puede achicar
+   Con una cue de nombre muy largo, el panel de Memorias ocupaba media pantalla y, al
+   arrastrar su borde para achicarlo, volvía a abrirse solo. Ahora se abre con su ancho
+   normal y se queda del ancho que usted le dé. En cada fila, el nombre largo de la
+   memoria termina en "..." y el de la cue se desplaza con el ratón encima.
+
+
+SIN CAMBIOS
+-----------
+
+- GO (Espacio), PANIC (Esc / Esc Esc), memorias (M, . N .), Bloqueo de función (Ctrl+L),
+  PFL, MASTER, Carts y Proyección funcionan igual que en la versión anterior.

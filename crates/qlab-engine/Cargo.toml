@@ -1,0 +1,15 @@
+[package]
+name = "qlab-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arc-swap.workspace = true
+ringbuf.workspace = true
+symphonia.workspace = true
+
+[dev-dependencies]
+qlab-protocol.workspace = true

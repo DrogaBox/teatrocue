@@ -1,0 +1,22 @@
+[package]
+name = "installer-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Herramienta del desarrollador: firma códigos de solicitud de reactivación de emergencia de TeatroCue."
+
+[lib]
+name = "installer_tool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "installer-tool"
+path = "src/main.rs"
+
+[dependencies]
+qlab-license = { workspace = true }
+ed25519-dalek = "2"
+rpassword = "7"
+zeroize = "1"

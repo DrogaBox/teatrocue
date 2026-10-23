@@ -1,0 +1,12 @@
+[package]
+name = "licencias-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Base de datos local de licencias de TeatroCue (equipos y licencias emitidas): la comparten teatrocue-admin y el instalador del pendrive."
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = { workspace = true }

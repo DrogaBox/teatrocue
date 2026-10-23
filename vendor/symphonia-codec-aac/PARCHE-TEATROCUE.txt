@@ -1,0 +1,4 @@
+symphonia-codec-aac 0.5.5 (MPL-2.0), copia sin cambios salvo:
+  src/aac/ics/mod.rs, Ics::decode_section_data: validate!(self.info.max_sfb < self.get_bands().len());
+Motivo: en un archivo de 2 h 24 min (captura de TV) un cuadro con max_sfb = 50 hacía "index out of bounds" en decode_spectrum.
+Con el parche el cuadro se descarta como corrupto y el motor lo cubre con silencio de la misma duración.

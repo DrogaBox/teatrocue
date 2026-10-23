@@ -1,0 +1,68 @@
+[package]
+name = "qlab-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Servidor de audio teatrocue-daemon: backend, secuenciador a 1 kHz, IPC y watchdog."
+
+[lib]
+name = "qlab_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "teatrocue-daemon"
+path = "src/main.rs"
+
+[features]
+default = []
+# Exige un `license.key` válido para esta PC antes de arrancar (el paquete del teatro se compila con ella).
+enforce-license = []
+# Host ASIO de cpal (Windows). Requiere el SDK de Steinberg en `CPAL_ASIO_DIR` (ver .cargo/config.toml).
+# Ojo: `asio-sys` 0.4 genera sus enlaces con bindgen y su comprobación de disposición de memoria falla con
+# el ABI Itanium de MinGW (`x86_64-pc-windows-gnu`). Compílalo con el destino MSVC en Windows (la VM).
+asio = ["cpal/asio"]
+# Host JACK de cpal.
+jack = ["cpal/jack"]
+
+[dependencies]
+qlab-protocol.workspace = true
+qlab-engine.workspace = true
+qlab-core.workspace = true
+qlab-license.workspace = true
+arc-swap.workspace = true
+ringbuf.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+memmap2.workspace = true
+ctrlc.workspace = true
+cpal.workspace = true
+interprocess.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# PipeWire nativo en Linux (además de ALSA, que `pipewire-alsa` ya redirige a PipeWire).
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pipewire"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+
+[dev-dependencies]
+ed25519-dalek = "2"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true

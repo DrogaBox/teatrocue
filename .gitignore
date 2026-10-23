@@ -1,0 +1,31 @@
+# Compilación y herramientas locales
+/target/
+/.sdk/
+/.usb-build/
+/.vm-tiny11/
+/.freebuff/
+.DS_Store
+
+# Material de trabajo y binarios generados (se publican como releases)
+/paquetes/
+/pendrive-final/
+/pendrive-partes/
+/MultiPlay-244-video/
+/qlab-rea/
+/promptparaclaude.md
+/qlab_audio_rust_spec.md
+/qlab_audio_rust_spec.md.metadata.json
+/*.zip
+
+# Datos, claves y firmas: nunca al repositorio
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.key
+*.enc
+*.jks
+*.keystore
+*.pem
+.env
+.env.*

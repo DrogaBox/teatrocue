@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TeatroCue — Generador de claves</title>
+<style>
+/* Una sola columna pensada para el celular; sin fuentes ni librerías externas: funciona en modo avión. */
+:root{--bg:#f4f1ea;--fg:#1c1b19;--dim:#6b665c;--card:#fffdf8;--line:#d8d2c4;--accent:#a8470a;--ok:#1f6b3a;--bad:#b3261e;--mono:ui-monospace,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#161512;--fg:#ece8de;--dim:#a29c8e;--card:#1f1d18;--line:#38352c;--accent:#f0a05a;--ok:#7bc38f;--bad:#f28b82}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.45 system-ui,sans-serif;padding:20px max(16px,env(safe-area-inset-left)) 40px}
+main{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+h1{font:600 1.5rem/1.2 Georgia,serif;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px}
+label{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+input,textarea,select,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;width:100%;min-height:48px}
+textarea{font-family:var(--mono);font-size:.95rem;min-height:84px}
+button{background:var(--accent);color:var(--bg);font-weight:600;border:0;cursor:pointer}
+button.alt{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:disabled{opacity:.45}
+.row{display:flex;gap:10px}.row>*{flex:1;min-width:0}
+.msg{font-size:.92rem;min-height:1.3em}.ok{color:var(--ok)}.err{color:var(--bad)}
+.out{font:600 1rem/1.5 var(--mono);word-break:break-all;background:var(--bg);border:1px dashed var(--accent);border-radius:8px;padding:12px;user-select:all}
+.dim{color:var(--dim);font-size:.85rem}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>TeatroCue · Generador de claves</h1>
+<p class="dim" style="margin:0">Funciona sin conexión. La contraseña y la clave privada nunca salen de este teléfono ni se guardan.</p>
+
+<section class="card">
+  <label for="kf">1 · master.key.enc (se carga una sola vez)</label>
+  <input id="kf" type="file">
+  <div id="kfs" class="msg dim"></div>
+  <label for="pw">Contraseña maestra</label>
+  <input id="pw" type="password" autocomplete="off" autocapitalize="off">
+</section>
+
+<section class="card">
+  <label for="req">2 · Código de solicitud (REQ-…)</label>
+  <textarea id="req" placeholder="Pegue aquí el código recibido por WhatsApp" spellcheck="false"></textarea>
+  <div id="reqs" class="msg"></div>
+  <label for="dur">Duración</label>
+  <select id="dur">
+    <option value="7">7 días (emergencia)</option>
+    <option value="15">15 días</option>
+    <option value="30">30 días</option>
+    <option value="365">1 año</option>
+    <option value="custom">Personalizada…</option>
+  </select>
+  <input id="days" type="number" min="1" max="365" value="7" inputmode="numeric" hidden aria-label="Días (1 a 365)">
+  <button id="go">Firmar y Generar Clave</button>
+  <div id="gos" class="msg"></div>
+</section>
+
+<section class="card" id="res" hidden>
+  <label>3 · Clave de activación</label>
+  <div id="out" class="out"></div>
+  <div id="info" class="dim"></div>
+  <button id="copy" class="alt">Copiar clave para WhatsApp</button>
+  <div id="cps" class="msg"></div>
+</section>
+</main>
+
+<script id="core">
+/* ===== Núcleo criptográfico (sin dependencias). Probado contra `installer-tool sign-challenge` de Rust. ===== */
+const TC = (() => {
+  const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const DOMAIN = new TextEncoder().encode("TeatroCue/activation/v1\n");
+  const REDEEM_WINDOW = 7 * 86400, MAX_DAYS = 365, MAX_ITER = 20000000;
+  const subtle = globalThis.crypto.subtle;
+
+  // ---- master.key.enc: "TCKEY1" | iter u32 BE | sal 16 | nonce 12 | AES-256-GCM(semilla 32)+tag, cabecera como AAD ----
+  async function decryptKeyfile(data, password) {
+    if (data.length !== 6 + 4 + 16 + 12 + 32 + 16 || new TextDecoder().decode(data.slice(0, 6)) !== "TCKEY1")
+      throw new Error("No es un master.key.enc de TeatroCue.");
+    const iter = new DataView(data.buffer, data.byteOffset + 6, 4).getUint32(0);
+    if (iter === 0 || iter > MAX_ITER) throw new Error("Archivo de clave inválido (iteraciones).");
+    const header = data.slice(0, 38), salt = data.slice(10, 26), nonce = data.slice(26, 38), ct = data.slice(38);
+    const base = await subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+    const key = await subtle.deriveKey({ name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    try {
+      return new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: nonce, additionalData: header }, key, ct));
+    } catch (e) { throw new Error("Contraseña incorrecta o archivo de clave dañado."); }
+  }
+
+  // ---- Ed25519 (RFC 8032) con BigInt ----
+  const P = (1n << 255n) - 19n, L = (1n << 252n) + 27742317777372353535851937790883648493n;
+  const mod = (a, m = P) => ((a % m) + m) % m;
+  function pow(b, e, m = P) { let r = 1n; b = mod(b, m); while (e > 0n) { if (e & 1n) r = r * b % m; b = b * b % m; e >>= 1n; } return r; }
+  const inv = (a) => pow(a, P - 2n);
+  const D = mod(-121665n * inv(121666n));
+  const SQRT_M1 = pow(2n, (P - 1n) / 4n);
+  function add(p, q) {
+    const [x1, y1, z1, t1] = p, [x2, y2, z2, t2] = q;
+    const a = (y1 - x1) * (y2 - x2) % P, b = (y1 + x1) * (y2 + x2) % P, c = 2n * D * t1 * t2 % P, d = 2n * z1 * z2 % P;
+    const e = mod(b - a), f = mod(d - c), g = mod(d + c), h = mod(b + a);
+    return [e * f % P, g * h % P, f * g % P, e * h % P];
+  }
+  function mul(p, k) { let r = [0n, 1n, 1n, 0n]; while (k > 0n) { if (k & 1n) r = add(r, p); p = add(p, p); k >>= 1n; } return r; }
+  const BY = mod(4n * inv(5n));
+  function recoverX(y, sign) {
+    const x2 = (y * y - 1n) * inv(D * y * y + 1n) % P;
+    let x = pow(x2, (P + 3n) / 8n);
+    if (mod(x * x - x2) !== 0n) x = x * SQRT_M1 % P;
+    if ((x & 1n) !== BigInt(sign)) x = P - x;
+    return x;
+  }
+  const BX = recoverX(BY, 0), B = [BX, BY, 1n, BX * BY % P];
+  function encodePoint(p) {
+    const zi = inv(p[2]), x = p[0] * zi % P, y = p[1] * zi % P;
+    const out = new Uint8Array(32); let v = y | ((x & 1n) << 255n);
+    for (let i = 0; i < 32; i++) { out[i] = Number(v & 255n); v >>= 8n; }
+    return out;
+  }
+  const leToBig = (b) => { let v = 0n; for (let i = b.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(b[i]); return v; };
+  const sha512 = async (...parts) => {
+    const n = parts.reduce((s, p) => s + p.length, 0), buf = new Uint8Array(n); let o = 0;
+    for (const p of parts) { buf.set(p, o); o += p.length; }
+    return new Uint8Array(await subtle.digest("SHA-512", buf));
+  };
+  async function expandSeed(seed) {
+    const h = await sha512(seed), a = h.slice(0, 32);
+    a[0] &= 248; a[31] &= 127; a[31] |= 64;
+    return { a: leToBig(a), prefix: h.slice(32) };
+  }
+  async function publicKey(seed) { const { a } = await expandSeed(seed); return encodePoint(mul(B, a)); }
+  async function sign(seed, msg) {
+    const { a, prefix } = await expandSeed(seed), A = encodePoint(mul(B, a));
+    const r = mod(leToBig(await sha512(prefix, msg)), L), R = encodePoint(mul(B, r));
+    const k = mod(leToBig(await sha512(R, A, msg)), L), S = mod(r + k * a, L);
+    const out = new Uint8Array(64); out.set(R); let v = S;
+    for (let i = 0; i < 32; i++) { out[32 + i] = Number(v & 255n); v >>= 8n; }
+    return out;
+  }
+
+  // ---- Base32 de Crockford y código de solicitud ----
+  function b32encode(bytes) {
+    let out = "", buf = 0, bits = 0;
+    for (const b of bytes) { buf = ((buf << 8) | b) >>> 0; bits += 8; while (bits >= 5) { bits -= 5; out += ALPHABET[(buf >>> bits) & 31]; } buf &= (1 << bits) - 1; }
+    if (bits > 0) out += ALPHABET[(buf << (5 - bits)) & 31];
+    return out;
+  }
+  const symbol = (c) => { c = c.toUpperCase(); if (c === "O") c = "0"; else if (c === "I" || c === "L") c = "1"; const i = ALPHABET.indexOf(c); return i < 0 ? null : i; };
+  function epochDigits(e) { let d = []; do { d.push(ALPHABET[e & 31]); e = Math.floor(e / 32); } while (e > 0); while (d.length < 2) d.push("0"); return d.reverse().join(""); }
+  function checkChar(data) { let sum = 0, i = 0; for (const c of data) { const v = symbol(c); if (v === null) continue; sum += (v + 1) * (2 * i + 1); i++; } return ALPHABET[sum % 32]; }
+  function parseChallenge(text) {
+    const bad = (m) => new Error("Código de solicitud inválido: " + m);
+    const clean = text.replace(/[^A-Za-z0-9-]/g, "").toUpperCase();
+    const parts = clean.split("-").filter(Boolean);
+    if (parts.length !== 6 || parts[0] !== "REQ") throw bad("debe tener la forma REQ-XXXX-XXXX-XXXX-XXXX-EEC");
+    const tail = parts[5];
+    if (tail.length < 3 || tail.length > 9) throw bad("falta la época o el carácter de control");
+    const groups = parts.slice(1, 5).map((g) => g.replace(/O/g, "0").replace(/[IL]/g, "1"));
+    if (!groups.every((g) => /^[0-9A-F]{4}$/.test(g))) throw bad("el Machine ID debe ser XXXX-XXXX-XXXX-XXXX");
+    const digits = tail.slice(0, -1); let epoch = 0;
+    for (const c of digits) { const v = symbol(c); if (v === null) throw bad("época con caracteres inválidos"); epoch = epoch * 32 + v; }
+    if (epoch > 0xffffffff) throw bad("época fuera de rango");
+    const canonDigits = epochDigits(epoch), machine = groups.join("-");
+    const want = checkChar(groups.join("") + canonDigits), got = symbol(tail.slice(-1));
+    if (got === null || ALPHABET[got] !== want) throw bad("el carácter de control no coincide (¿se copió mal alguna letra?)");
+    return { machine, epoch };
+  }
+
+  // ---- Firma de la respuesta: igual a `sign_challenge` de qlab-license ----
+  async function signChallenge(ch, days, nowSecs, seed) {
+    days = Math.min(MAX_DAYS, Math.max(1, Math.floor(days)));
+    const validUntil = nowSecs + days * 86400, redeemBy = nowSecs + REDEEM_WINDOW;
+    const p = new Uint8Array(21), dv = new DataView(p.buffer);
+    p[0] = 1;
+    const hex = ch.machine.replace(/-/g, "");
+    for (let i = 0; i < 8; i++) p[1 + i] = parseInt(hex.substr(i * 2, 2), 16);
+    dv.setUint32(9, ch.epoch); dv.setUint32(13, Math.min(validUntil, 0xffffffff)); dv.setUint32(17, Math.min(redeemBy, 0xffffffff));
+    const msg = new Uint8Array(DOMAIN.length + p.length); msg.set(DOMAIN); msg.set(p, DOMAIN.length);
+    const sig = await sign(seed, msg), blob = new Uint8Array(85); blob.set(p); blob.set(sig, 21);
+    const body = b32encode(blob), groups = body.match(/.{1,8}/g);
+    return { response: "RESP-" + groups.join("-"), validUntil, redeemBy, days };
+  }
+  return { decryptKeyfile, publicKey, sign, parseChallenge, signChallenge, b32encode };
+})();
+if (typeof module !== "undefined") module.exports = TC;
+</script>
+
+<script id="ui">
+(() => {
+  if (typeof document === "undefined") return;
+  const $ = (id) => document.getElementById(id);
+  const STORE = "teatrocue.masterkey.v1";
+  let keyBytes = null;
+  const b64 = (u8) => btoa(String.fromCharCode(...u8)), unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const say = (el, text, cls) => { el.textContent = text; el.className = "msg " + (cls || ""); };
+  const fmt = (t) => new Date(t * 1000).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+  try { const s = localStorage.getItem(STORE); if (s) { keyBytes = unb64(s); say($("kfs"), "master.key.enc ya cargado en este teléfono.", "ok"); } } catch (e) {}
+  $("kf").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    keyBytes = new Uint8Array(await f.arrayBuffer());
+    try { localStorage.setItem(STORE, b64(keyBytes)); } catch (e) {}
+    say($("kfs"), "Cargado: " + f.name + " (" + keyBytes.length + " bytes). Está cifrado; sin la contraseña no sirve.", "ok");
+  });
+  $("dur").addEventListener("change", () => {
+    const c = $("dur").value === "custom"; $("days").hidden = !c;
+    if (!c) $("days").value = $("dur").value;
+  });
+  $("req").addEventListener("input", () => {
+    const t = $("req").value.trim(); if (!t) return say($("reqs"), "");
+    try { const c = TC.parseChallenge(t); say($("reqs"), "PC " + c.machine + " · época " + c.epoch, "ok"); } catch (e) { say($("reqs"), e.message, "err"); }
+  });
+  $("go").addEventListener("click", async () => {
+    $("res").hidden = true; say($("gos"), "");
+    try {
+      if (!keyBytes) throw new Error("Cargue primero el archivo master.key.enc.");
+      if (!$("pw").value) throw new Error("Escriba la contraseña maestra.");
+      const ch = TC.parseChallenge($("req").value);
+      const days = $("dur").value === "custom" ? parseInt($("days").value, 10) : parseInt($("dur").value, 10);
+      if (!(days >= 1 && days <= 365)) throw new Error("La duración debe ser de 1 a 365 días.");
+      say($("gos"), "Descifrando la clave (unos segundos)…");
+      $("go").disabled = true;
+      const seed = await TC.decryptKeyfile(keyBytes, $("pw").value);
+      const r = await TC.signChallenge(ch, days, Math.floor(Date.now() / 1000), seed);
+      seed.fill(0);
+      $("out").textContent = r.response;
+      $("info").textContent = "Válida por " + r.days + " días hasta el " + fmt(r.validUntil) + ". Hay que canjearla antes del " + fmt(r.redeemBy) + ". Solo sirve para la PC " + ch.machine + ".";
+      $("res").hidden = false; say($("gos"), "Clave generada.", "ok"); $("res").scrollIntoView({ behavior: "smooth" });
+    } catch (e) { say($("gos"), e.message, "err"); }
+    $("go").disabled = false;
+  });
+  $("copy").addEventListener("click", async () => {
+    const text = "Clave de activación TeatroCue: [" + $("out").textContent + "]";
+    try { await navigator.clipboard.writeText(text); say($("cps"), "Copiado. Péguelo en WhatsApp.", "ok"); }
+    catch (e) { const r = document.createRange(); r.selectNodeContents($("out")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); say($("cps"), "Seleccionada: copie con el menú del teléfono.", "err"); }
+  });
+})();
+</script>
+</body>
+</html>
