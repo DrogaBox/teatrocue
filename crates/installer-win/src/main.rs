@@ -108,6 +108,9 @@ fn launch_gui() -> ExitCode {
     let exe_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
 
     let candidates = [
+        exe_dir.join("Instalador_Unificado.ps1"),
+        exe_dir.join("..").join("Instalador_Unificado.ps1"),
+        PathBuf::from("Instalador_Unificado.ps1"),
         exe_dir.join("Instalador_Grafico_TeatroCue.ps1"),
         exe_dir.join("Instalador_Grafico.ps1"),
         exe_dir.join("..").join("Instalador_Grafico_TeatroCue.ps1"),
