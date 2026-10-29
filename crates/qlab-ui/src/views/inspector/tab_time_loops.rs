@@ -177,18 +177,20 @@ pub fn drag_memory_time(secs: f64, duration: f64, sample_rate: u32) -> f64 {
     crate::views::memories::snap_to_frame(if secs.is_finite() { secs.clamp(0.0, duration.max(0.0)) } else { 0.0 }, sample_rate)
 }
 
-/// Añade una memoria en `at` (segundos, dentro del archivo) y devuelve su índice tras ordenar. `None` si ya hay el máximo.
+/// Añade una memoria en `at` (segundos, dentro del archivo) en su sitio cronológico y devuelve su índice. `None` si ya hay el máximo.
 pub fn add_memory_at(t: &mut AudioTimeAndLoopsData, duration: f64, at: f64) -> Option<usize> {
     if t.memories.len() >= MAX_MEMORIES {
         return None;
     }
     let secs = at.clamp(0.0, duration.max(0.0));
-    t.memories.push(MemoryMark { secs, name: String::new(), note: String::new() });
+    let pos = t.memories.iter().filter(|m| m.secs <= secs).count();
+    t.memories.insert(pos, MemoryMark { secs, name: String::new(), note: String::new() });
     normalize_memories(t, duration);
     t.memories.iter().position(|m| m.secs == secs && m.name.is_empty() && m.note.is_empty())
 }
 
-/// Deja las memorias ordenadas por posición y dentro del archivo, con nombres y notas de largo acotado.
+/// Deja las memorias dentro del archivo, con nombres y notas de largo acotado. No ordena: el orden de la lista es el que
+/// se guarda (cronológico de fábrica, o el que el operador dejó arrastrando filas en el panel de Memorias).
 pub fn normalize_memories(t: &mut AudioTimeAndLoopsData, duration: f64) {
     for m in &mut t.memories {
         m.secs = if m.secs.is_finite() { m.secs.clamp(0.0, duration.max(0.0)) } else { 0.0 };
@@ -199,7 +201,6 @@ pub fn normalize_memories(t: &mut AudioTimeAndLoopsData, duration: f64) {
             m.note = m.note.chars().take(MAX_MEMORY_NOTE_CHARS).collect();
         }
     }
-    t.memories.sort_by(|a, b| a.secs.total_cmp(&b.secs));
     t.memories.truncate(MAX_MEMORIES);
 }
 
@@ -257,12 +258,11 @@ pub fn show(ui: &mut Ui, d: &mut Draft, cx: &mut TabCtx, out: &mut InspectorOutp
     let edit_id = ui.scope_id().with(("edit_cursor", cue_id));
     let mut edit_cursor: Option<f64> = ui.data(|d| d.get_temp(edit_id));
     // Pedido de la ventana global de Memorias: llevar el cursor de edición a una memoria de esta cue.
+    // Solo mueve el cursor: las memorias no cambian el punto de arranque (eso lo hace «Arrancar aquí»).
     let goto_id = egui::Id::NULL.with("memory_goto");
     if let Some((id, secs)) = ui.ctx().data(|d| d.get_temp::<(u64, f64)>(goto_id)) {
         if id == cue_id {
             edit_cursor = Some(secs.clamp(0.0, duration));
-            // Elegir una memoria deja la cue lista para dispararse desde ahí (GO / Espacio).
-            t.start_override_secs = Some(secs.clamp(0.0, duration));
             ui.ctx().data_mut(|d| d.remove::<(u64, f64)>(goto_id));
         }
     }
@@ -716,7 +716,7 @@ fn wave_view(ui: &mut Ui, t: &mut AudioTimeAndLoopsData, duration: f64, peaks: O
 
     // Banderas de memoria sobre la regla: rombo ámbar con el nombre. Un clic salta a ese punto; sostener y arrastrar la mueve
     // (como las ubicaciones de memoria de Pro Tools): una línea guía vertical cruza toda la onda siguiendo el cursor y un
-    // rótulo muestra el nombre y el tiempo exacto en vivo. Al soltar se confirma el frame nuevo y la lista se reordena.
+    // rótulo muestra el nombre y el tiempo exacto en vivo. Al soltar se confirma el frame nuevo (la lista no se reordena: el orden solo cambia arrastrando filas en el panel de Memorias).
     let mut clicked_memory = None;
     let drag_state_id = ui.scope_id().with("memory_drag_state");
     let mut drag_state: Option<(usize, f64)> = ui.data(|d| d.get_temp(drag_state_id));
@@ -782,7 +782,7 @@ fn wave_view(ui: &mut Ui, t: &mut AudioTimeAndLoopsData, duration: f64, peaks: O
     if let Some((i, v)) = drag_commit {
         if i < t.memories.len() {
             t.memories[i].secs = v;
-            // El borrador cambió: el Inspector lo guarda y marca el show con cambios (la lista se reordena en `memory_list`).
+            // El borrador cambió: el Inspector lo guarda y marca el show con cambios.
         }
     }
     if let Some(secs) = clicked_memory {
@@ -949,7 +949,7 @@ mod tests {
         assert_eq!(frame_of(-1.0, 48_000), 0);
     }
     #[test]
-    fn memories_are_kept_sorted_inside_the_file_and_bounded() {
+    fn memories_are_kept_inside_the_file_and_bounded_and_their_order_is_preserved() {
         let mut t = AudioTimeAndLoopsData::default();
         assert_eq!(add_memory_at(&mut t, 10.0, 7.0), Some(0));
         assert_eq!(add_memory_at(&mut t, 10.0, 2.0), Some(0), "la nueva queda primera por posición");
@@ -957,7 +957,7 @@ mod tests {
         t.memories[1].secs = f64::NAN;
         t.memories.push(MemoryMark { secs: 99.0, name: String::new(), note: "n".repeat(5_000) });
         normalize_memories(&mut t, 10.0);
-        assert_eq!(t.memories.iter().map(|m| m.secs).collect::<Vec<_>>(), vec![0.0, 2.0, 10.0]);
+        assert_eq!(t.memories.iter().map(|m| m.secs).collect::<Vec<_>>(), vec![2.0, 0.0, 10.0], "normalize no ordena: conserva el orden de la lista (manual o cronológico)");
         assert!(t.memories.iter().all(|m| m.name.chars().count() <= MAX_MEMORY_NAME_CHARS && m.note.chars().count() <= MAX_MEMORY_NOTE_CHARS));
         assert_eq!(add_memory_at(&mut t, 10.0, -5.0).map(|i| t.memories[i].secs), Some(0.0), "se recorta al inicio");
         for _ in 0..(MAX_MEMORIES + 10) {

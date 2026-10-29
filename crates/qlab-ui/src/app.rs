@@ -216,7 +216,8 @@ pub struct QlabApp {
     pub(crate) quick_memory: Option<views::memories::Quick>,
     /// Volumen maestro (dB); empieza en 0 y se manda al daemon al conectar.
     pub master_db: f32,
-    /// Memoria elegida mientras la cue sonaba: al confirmarse su nuevo punto de arranque la cue se relanza desde ahí.
+    /// Salto en caliente (memoria elegida con la cue sonando): cuando la cue ya se detuvo y el borrador está cargado, se arma
+    /// en él el arranque del salto; al confirmarse el envío la cue se relanza desde ahí. El punto se devuelve al volver a parar.
     restart_after_save: Option<(u64, f64)>,
     /// Relanzar esta cue cuando llegue el instante (deja pasar el Stop antes del nuevo GO).
     restart_due: Option<(Instant, u64)>,
@@ -229,6 +230,12 @@ pub struct QlabApp {
     repair_rx: std::sync::mpsc::Receiver<(std::path::PathBuf, Result<std::path::PathBuf, String>)>,
     /// Cambio de tiempo de una memoria pedido desde el panel para una cue cuyo detalle todavía no está abierto.
     pending_memory_time: Option<(u64, f64, f64)>,
+    /// Renombrar una memoria pedido desde el panel para una cue cuyo detalle todavía no está abierto.
+    pending_memory_rename: Option<(u64, usize, String)>,
+    /// Quitar una memoria pedido desde el panel para una cue cuyo detalle todavía no está abierto.
+    pending_memory_delete: Option<(u64, usize)>,
+    /// Reordenar memorias (arrastre en el panel) para una cue cuyo detalle todavía no está abierto.
+    pending_memory_reorder: Option<(u64, usize, usize)>,
     /// «Bloqueo de función»: durante una función en vivo no se puede alterar el show por accidente.
     pub(crate) locked: bool,
     /// Navegación numérica de memorias («. N .» del teclado numérico): dígitos tecleados hasta ahora.
@@ -331,6 +338,9 @@ impl QlabApp {
             repair_tx: repair_chan.0,
             repair_rx: repair_chan.1,
             pending_memory_time: None,
+            pending_memory_rename: None,
+            pending_memory_delete: None,
+            pending_memory_reorder: None,
             locked: false,
             num_nav: None,
             carts: Default::default(),
@@ -571,11 +581,18 @@ impl QlabApp {
                     Ok(ServerResponse::Error { message }) => {
                         self.toast(ToastKind::Error, format!("No se guardó: {message}"));
                         self.revert_draft(id);
+                        // Un salto en caliente cuyo arranque rechazó el daemon no se reintenta: se queda sin relanzar.
+                        if self.restart_after_save.is_some_and(|(rid, _)| rid == id) {
+                            self.restart_after_save = None;
+                        }
                     }
                     Ok(_) => {}
                     Err(e) => {
                         self.toast(ToastKind::Error, format!("No se guardó: {e}"));
                         self.revert_draft(id);
+                        if self.restart_after_save.is_some_and(|(rid, _)| rid == id) {
+                            self.restart_after_save = None;
+                        }
                     }
                 }
             }
@@ -1563,8 +1580,9 @@ impl QlabApp {
         }
     }
 
-    /// Escribe a mano el tiempo de una memoria (desde el panel): se valida contra el archivo, se ajusta a un frame y la lista
-    /// de la cue se reordena. Si la cue no está abierta se abre y el cambio se aplica en cuanto cargue.
+    /// Escribe a mano el tiempo de una memoria (desde el panel): se valida contra el archivo, se ajusta a un frame y la
+    /// memoria conserva su puesto en la lista (el orden solo cambia arrastrando filas). Si la cue no está abierta se abre
+    /// y el cambio se aplica en cuanto cargue.
     fn set_memory_time(&mut self, cue_id: u64, from: f64, to: f64) {
         if self.locked {
             self.lock_refuses();
@@ -1588,6 +1606,81 @@ impl QlabApp {
         }
         m.secs = views::memories::snap_to_frame(if max.is_finite() { to.min(max) } else { to }, t.file_sample_rate);
         crate::views::inspector::tab_time_loops::normalize_memories(t, if max.is_finite() { max } else { f64::MAX });
+    }
+
+    /// Renombra una memoria (panel de Memorias): al borrador abierto o, si la cue no está abierta, en cuanto cargue.
+    /// Se guarda igual que cualquier edición de la cue (UpdateCue) y entra en el historial (Ctrl+Z la recupera).
+    fn set_memory_rename(&mut self, cue_id: u64, index: usize, name: String) {
+        if self.locked {
+            self.lock_refuses();
+            return;
+        }
+        if self.inspector.draft.as_ref().is_some_and(|d| d.id() == cue_id) {
+            self.apply_memory_rename(cue_id, index, name);
+        } else {
+            self.pending_memory_rename = Some((cue_id, index, name));
+            self.select(cue_id);
+        }
+    }
+
+    fn apply_memory_rename(&mut self, cue_id: u64, index: usize, name: String) {
+        let max = self.file_duration_of_draft().unwrap_or(f64::MAX);
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == cue_id) else { return };
+        let Some(t) = d.node.body.audio_mut().map(|a| &mut a.time_loops) else { return };
+        if let Some(m) = t.memories.get_mut(index) {
+            m.name = name;
+        }
+        crate::views::inspector::tab_time_loops::normalize_memories(t, max);
+    }
+
+    /// Quita una memoria (panel de Memorias): al borrador abierto o, si la cue no está abierta, en cuanto cargue.
+    /// La numeración del panel es la posición en la lista: al quitar una, las siguientes suben un puesto.
+    fn set_memory_delete(&mut self, cue_id: u64, index: usize) {
+        if self.locked {
+            self.lock_refuses();
+            return;
+        }
+        if self.inspector.draft.as_ref().is_some_and(|d| d.id() == cue_id) {
+            self.apply_memory_delete(cue_id, index);
+        } else {
+            self.pending_memory_delete = Some((cue_id, index));
+            self.select(cue_id);
+        }
+    }
+
+    fn apply_memory_delete(&mut self, cue_id: u64, index: usize) {
+        let max = self.file_duration_of_draft().unwrap_or(f64::MAX);
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == cue_id) else { return };
+        let Some(t) = d.node.body.audio_mut().map(|a| &mut a.time_loops) else { return };
+        if index < t.memories.len() {
+            t.memories.remove(index);
+        }
+        crate::views::inspector::tab_time_loops::normalize_memories(t, max);
+    }
+
+    /// Reordena memorias arrastrando una fila del panel a otra posición de su misma cue: al borrador abierto o, si la cue
+    /// no está abierta, en cuanto cargue. `from` y `to` son índices de la lista de la cue; `to` es el índice de inserción
+    /// después de quitar la memoria `from` (las demás conservan su orden relativo). Se guarda con la cue (UpdateCue).
+    fn set_memory_reorder(&mut self, cue_id: u64, from: usize, to: usize) {
+        if self.locked {
+            self.lock_refuses();
+            return;
+        }
+        if self.inspector.draft.as_ref().is_some_and(|d| d.id() == cue_id) {
+            self.apply_memory_reorder(cue_id, from, to);
+        } else {
+            self.pending_memory_reorder = Some((cue_id, from, to));
+            self.select(cue_id);
+        }
+    }
+
+    fn apply_memory_reorder(&mut self, cue_id: u64, from: usize, to: usize) {
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == cue_id) else { return };
+        let Some(t) = d.node.body.audio_mut().map(|a| &mut a.time_loops) else { return };
+        if from < t.memories.len() && to < t.memories.len() {
+            let m = t.memories.remove(from);
+            t.memories.insert(to, m);
+        }
     }
 
     /// Crea en segundo plano la copia reparada de `original` (hasta `until` segundos) junto a él.
@@ -1997,8 +2090,9 @@ impl QlabApp {
         self.link.request(tag, ClientRequest::AddCue { kind: kind.into(), parent, after: Some(id) });
     }
 
-    /// Ir a una memoria. Si la cue suena, se detiene y se relanza desde ese punto en cuanto se guarde el nuevo punto de
-    /// arranque; si no, queda como siguiente en disparar (Espacio) y con el cursor de edición ahí.
+    /// Ir a una memoria. Si la cue suena, se detiene y se relanza desde ese punto en cuanto se guarde el arranque del salto;
+    /// ese punto es de una sola vez: al volver a pararse (o terminar) la cue recobra el arranque que tenía. Si la cue está
+    /// parada, el salto solo mueve el playhead y el cursor de edición: las memorias nunca cambian el punto de arranque.
     fn activate_memory(&mut self, ctx: &egui::Context, id: u64, marker: f64, shift: bool) {
         // Pre-roll: arranca unos segundos antes del marcador (Shift+clic aplica 2 s aunque esté apagado).
         let pre = match (self.memories_panel.preroll, shift) {
@@ -2006,11 +2100,11 @@ impl QlabApp {
             (p, _) => p,
         };
         let secs = views::memories::preroll_start(marker, pre);
-        if pre > 0 {
-            let name = self.model.summary(id).and_then(|c| c.memories.iter().find(|m| (m.secs - marker).abs() < 1e-6)).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{marker:.1} s"));
-            self.hud(format!("Pre-roll: -{:.1}s -> Memoria [{name}]", marker - secs));
-        }
         if self.telemetry.running.get(&id).is_some_and(|i| i.phase.is_some()) {
+            if pre > 0 {
+                let name = self.model.summary(id).and_then(|c| c.memories.iter().find(|m| (m.secs - marker).abs() < 1e-6)).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{marker:.1} s"));
+                self.hud(format!("Pre-roll: -{:.1}s -> Memoria [{name}]", marker - secs));
+            }
             self.link.fire(ClientRequest::CueAction { cue_id: id, action: qlab_protocol::show_format::ControlActionDto::Stop });
             let same = self.inspector.draft.as_ref().is_some_and(|d| d.id() == id && d.baseline.body.audio().is_some_and(|a| a.time_loops.start_override_secs == Some(secs)));
             if same {
@@ -2018,6 +2112,10 @@ impl QlabApp {
             } else {
                 self.restart_after_save = Some((id, secs));
             }
+            // El arranque del salto sirve una vez: cuando la cue se vuelva a parar, recobra el que tenía (el mismo `prev`
+            // si había un salto anterior aún sin devolver, para no perder el arranque original de la cue).
+            let prev = self.resume_points.get(&id).map_or_else(|| self.model.summary(id).and_then(|c| c.start_override_secs), |r| r.prev);
+            self.resume_points.insert(id, ResumePoint { prev, start: secs, fired: false });
         }
         ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("memory_goto"), (id, secs)));
         self.inspector.tab = crate::views::inspector::Tab::TimeLoops;
@@ -2105,7 +2203,10 @@ impl QlabApp {
                 };
                 if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == q.cue_id) {
                     if let Some(a) = d.node.body.audio_mut() {
-                        a.time_loops.memories.push(qlab_protocol::cue_dto::MemoryMark { secs, name, note: String::new() });
+                        // En su sitio cronológico (el orden de la lista es el que se guarda: cronológico de fábrica, o el
+                        // que el operador dejó arrastrando filas en el panel de Memorias).
+                        let pos = a.time_loops.memories.iter().filter(|m| m.secs <= secs).count();
+                        a.time_loops.memories.insert(pos, qlab_protocol::cue_dto::MemoryMark { secs, name, note: String::new() });
                         views::inspector::tab_time_loops::normalize_memories(&mut a.time_loops, f64::MAX);
                         self.memories_open = true;
                     }
@@ -2254,6 +2355,35 @@ impl QlabApp {
             if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
                 self.pending_memory_time = None;
                 self.apply_memory_time(from, to);
+            }
+        }
+        if let Some((id, index, name)) = self.pending_memory_rename {
+            if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                self.pending_memory_rename = None;
+                self.apply_memory_rename(id, index, name);
+            }
+        }
+        if let Some((id, index)) = self.pending_memory_delete {
+            if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                self.pending_memory_delete = None;
+                self.apply_memory_delete(id, index);
+            }
+        }
+        if let Some((id, from, to)) = self.pending_memory_reorder {
+            if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                self.pending_memory_reorder = None;
+                self.apply_memory_reorder(id, from, to);
+            }
+        }
+        // Salto en caliente (memoria con la cue sonando): cuando la cue ya se detuvo y el borrador está cargado, arma en él
+        // el arranque del salto — el daemon no acepta cambiar el arranque de una cue que suena. El envío dispara el relanzado.
+        if let Some((id, secs)) = self.restart_after_save {
+            if !self.sounding(id) {
+                if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) {
+                    if let Some(a) = d.node.body.audio_mut() {
+                        a.time_loops.start_override_secs = Some(secs);
+                    }
+                }
             }
         }
         self.autosave_tick(now);
@@ -2778,6 +2908,9 @@ impl QlabApp {
             }
             Some(views::memories::PanelEvent::Preroll(v)) => self.set_preroll(v),
             Some(views::memories::PanelEvent::SetTime { cue_id, from, to }) => self.set_memory_time(cue_id, from, to),
+            Some(views::memories::PanelEvent::Rename { cue_id, index, name }) => self.set_memory_rename(cue_id, index, name),
+            Some(views::memories::PanelEvent::Delete { cue_id, index }) => self.set_memory_delete(cue_id, index),
+            Some(views::memories::PanelEvent::Reorder { cue_id, from, to }) => self.set_memory_reorder(cue_id, from, to),
             None => {}
         }
 
