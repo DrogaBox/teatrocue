@@ -235,7 +235,7 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
                         }
                     }
                 } else {
-                    let hover = format!("{name}\nIr a este punto: si la cue suena, salta en caliente y al volver a parar recobra su arranque; si no, mueve el cursor de edición (no cambia el arranque)");
+                    let hover = format!("{name}\nIr a este punto (en caliente si la cue suena; si no, queda lista para Espacio)");
                     let clicked = ui
                         .scope(|ui| {
                             ui.set_max_width(name_w);
@@ -310,8 +310,12 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
             }
         }
         match drag_state {
-            Some(st) => ui.data_mut(|d| d.insert_temp(drag_state_id, st)),
-            None => ui.data_mut(|d| d.remove::<RowDrag>(drag_state_id)),
+            Some(st) => ui.data_mut(|d| {
+                d.insert_temp(drag_state_id, st);
+            }),
+            None => ui.data_mut(|d| {
+                d.remove::<RowDrag>(drag_state_id);
+            }),
         }
         if let Some(y) = drag_state.as_ref().and_then(|s| s.guide_y) {
             let (x0, x1) = row_rects.iter().fold((f32::MAX, f32::MIN), |(a, b), (r, _)| (a.min(r.left()), b.max(r.right())));

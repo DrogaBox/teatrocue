@@ -1,0 +1,189 @@
+# CÓMO PUBLICAR UNA VERSIÓN NUEVA DE TEATROCUE:
+#   1. El tag manda para el nombre del asset de Linux (v1.1.0 → 1.1.0); la versión interna vive en Cargo.toml.
+#   2. git tag v1.1.0 && git push --tags
+#   3. GitHub compila Windows y Linux y publica el Release con notas generadas automáticamente.
+#   Alternativa: pestaña Actions → "Release" → Run workflow, indicando un tag ya pusheado.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag ya existente a publicar (ej.: v1.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows (Instalar_TeatroCue + teatrocue-ui/daemon/admin + ffmpeg)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Guardia: CI no necesita nada privado ni gitignored (build.rs compila con clave pública vacía si no
+      # se le pasa TEATROCUE_PUBLIC_KEY_FILE, y vendor/symphonia-codec-aac está commiteado). Nunca debe
+      # aparecer una clave del desarrollador: con ella los binarios del release quedarían atados a ese par.
+      - name: Guardia — CI no incrusta claves de desarrollador
+        shell: bash
+        run: |
+          if [ -n "${TEATROCUE_PUBLIC_KEY_FILE:-}" ] || [ -n "${TEATROCUE_MASTER_PASSWORD:-}" ]; then
+            echo "::error::TEATROCUE_PUBLIC_KEY_FILE / TEATROCUE_MASTER_PASSWORD no pueden estar definidos en CI: el release se compila sin claves (la distribución real con licencia se arma con scripts/build_usb_installer.sh en la PC del desarrollador)."
+            exit 1
+          fi
+
+      - name: Rust (estable; el workspace pide rust-version 1.85)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Compilar interfaz, daemon, admin e instalador (MSVC: sin DLL de MinGW)
+        run: cargo build --release -p qlab-ui -p qlab-daemon -p teatrocue-admin -p installer-win
+
+      # ffmpeg.exe y ffprobe.exe estáticos (soporte de vídeo), igual que hace scripts/build_usb_installer.sh:
+      # build LGPL de BtbN/FFmpeg-Builds, con la suma SHA-256 verificada contra la publicada.
+      - name: ffmpeg estático de Windows (suma verificada)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sums = & curl.exe -fsSL 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256'
+          $lines = $sums | Where-Object { $_ -match ' ffmpeg-n[\d.]+-latest-win64-lgpl-[\d.]+\.zip$' }
+          if (-not $lines) { throw 'no se encontró una build lgpl de ffmpeg en BtbN/FFmpeg-Builds' }
+          $line = $lines | Sort-Object { [version]($_ -replace '^.*lgpl-([\d.]+)\.zip.*$', '$1') } | Select-Object -Last 1
+          $parts = $line.Trim() -split '\s+'
+          $want = $parts[0]; $zip = $parts[-1]
+          New-Item -ItemType Directory -Force .sdk/ffmpeg | Out-Null
+          & curl.exe -fL --progress-bar -o ".sdk/ffmpeg/$zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$zip"
+          $got = (Get-FileHash ".sdk/ffmpeg/$zip" -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) { throw "la suma SHA-256 de $zip no coincide con la publicada ($got ≠ $want)" }
+          Write-Host "SHA-256 verificada: $got"
+          Expand-Archive ".sdk/ffmpeg/$zip" -DestinationPath .sdk/ffmpeg/x -Force
+          $inner = Get-ChildItem .sdk/ffmpeg/x -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "$($inner.FullName)/bin/ffmpeg.exe" dist/
+          if (Test-Path "$($inner.FullName)/bin/ffprobe.exe") { Copy-Item "$($inner.FullName)/bin/ffprobe.exe" dist/ } else { Write-Host 'AVISO: sin ffprobe.exe (la vista previa de vídeo lo necesita)' }
+
+      - name: Reunir los assets de Windows con los nombres que esperan el instalador y la suite unificada
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/Instalar_TeatroCue.exe dist/
+          Copy-Item target/release/teatrocue-ui.exe dist/
+          Copy-Item target/release/teatrocue-daemon.exe dist/
+          Copy-Item target/release/teatrocue-admin.exe dist/
+
+      - name: Verificar nombres de assets
+        shell: bash
+        run: |
+          ls -l dist
+          test -f dist/Instalar_TeatroCue.exe
+          test -f dist/teatrocue-ui.exe
+          test -f dist/teatrocue-daemon.exe
+          test -f dist/teatrocue-admin.exe
+          test -f dist/ffmpeg.exe
+
+      - name: Subir artefactos de Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: dist/
+          if-no-files-found: error
+
+  linux:
+    name: Linux (teatrocue-ui/daemon/admin empaquetados)
+    runs-on: ubuntu-latest
+    env:
+      # Versión del release tomada del tag (v1.1.0 → 1.1.0), no de Cargo.toml: es la que nombra el asset.
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guardia — CI no incrusta claves de desarrollador
+        run: |
+          if [ -n "${TEATROCUE_PUBLIC_KEY_FILE:-}" ] || [ -n "${TEATROCUE_MASTER_PASSWORD:-}" ]; then
+            echo "::error::TEATROCUE_PUBLIC_KEY_FILE / TEATROCUE_MASTER_PASSWORD no pueden estar definidos en CI: el release se compila sin claves (la distribución real con licencia se arma con scripts/build_usb_installer.sh en la PC del desarrollador)."
+            exit 1
+          fi
+
+      - name: Rust (estable; el workspace pide rust-version 1.85)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # ALSA (audio de cpal) y Wayland/X11/OpenGL (ventanas y render de eframe/winit): todo lo demás es Rust puro.
+      - name: Dependencias de sistema para egui + cpal en Linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libgl1 \
+            libegl1
+
+      - name: Compilar interfaz, daemon y admin
+        run: cargo build --release -p qlab-ui -p qlab-daemon -p teatrocue-admin
+
+      - name: Reunir los assets de Linux
+        run: |
+          VERSION="${TAG#v}"
+          mkdir -p dist
+          tar -czf "dist/TeatroCue-linux-${VERSION}-x86_64.tar.gz" -C target/release teatrocue-ui teatrocue-daemon teatrocue-admin
+          ls -l dist
+          test -f "dist/TeatroCue-linux-${VERSION}-x86_64.tar.gz"
+
+      - name: Subir artefactos de Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-assets
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Publicar el release de GitHub
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bajar los assets compilados
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Sumas SHA-256 de los assets (igual que el pendrive)
+        run: |
+          ls -l dist
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+
+      - name: Crear el release con notas generadas y todos los assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: TeatroCue ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*

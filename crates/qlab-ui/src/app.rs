@@ -216,8 +216,7 @@ pub struct QlabApp {
     pub(crate) quick_memory: Option<views::memories::Quick>,
     /// Volumen maestro (dB); empieza en 0 y se manda al daemon al conectar.
     pub master_db: f32,
-    /// Salto en caliente (memoria elegida con la cue sonando): cuando la cue ya se detuvo y el borrador está cargado, se arma
-    /// en él el arranque del salto; al confirmarse el envío la cue se relanza desde ahí. El punto se devuelve al volver a parar.
+    /// Memoria elegida mientras la cue sonaba: al confirmarse su nuevo punto de arranque la cue se relanza desde ahí.
     restart_after_save: Option<(u64, f64)>,
     /// Relanzar esta cue cuando llegue el instante (deja pasar el Stop antes del nuevo GO).
     restart_due: Option<(Instant, u64)>,
@@ -236,6 +235,9 @@ pub struct QlabApp {
     pending_memory_delete: Option<(u64, usize)>,
     /// Reordenar memorias (arrastre en el panel) para una cue cuyo detalle todavía no está abierto.
     pending_memory_reorder: Option<(u64, usize, usize)>,
+    /// Memoria elegida (panel o bandera de la onda): su punto de arranque se aplica al borrador de la cue en cuanto
+    /// esté cargado (si era otra cue, el detalle llega por IPC unas frames más tarde).
+    pending_memory_goto: Option<(u64, f64)>,
     /// «Bloqueo de función»: durante una función en vivo no se puede alterar el show por accidente.
     pub(crate) locked: bool,
     /// Navegación numérica de memorias («. N .» del teclado numérico): dígitos tecleados hasta ahora.
@@ -341,6 +343,7 @@ impl QlabApp {
             pending_memory_rename: None,
             pending_memory_delete: None,
             pending_memory_reorder: None,
+            pending_memory_goto: None,
             locked: false,
             num_nav: None,
             carts: Default::default(),
@@ -581,18 +584,11 @@ impl QlabApp {
                     Ok(ServerResponse::Error { message }) => {
                         self.toast(ToastKind::Error, format!("No se guardó: {message}"));
                         self.revert_draft(id);
-                        // Un salto en caliente cuyo arranque rechazó el daemon no se reintenta: se queda sin relanzar.
-                        if self.restart_after_save.is_some_and(|(rid, _)| rid == id) {
-                            self.restart_after_save = None;
-                        }
                     }
                     Ok(_) => {}
                     Err(e) => {
                         self.toast(ToastKind::Error, format!("No se guardó: {e}"));
                         self.revert_draft(id);
-                        if self.restart_after_save.is_some_and(|(rid, _)| rid == id) {
-                            self.restart_after_save = None;
-                        }
                     }
                 }
             }
@@ -1608,6 +1604,18 @@ impl QlabApp {
         crate::views::inspector::tab_time_loops::normalize_memories(t, if max.is_finite() { max } else { f64::MAX });
     }
 
+    /// Aplica el punto de arranque de una memoria elegida (panel o bandera de la onda) al borrador ya cargado de su cue:
+    /// la cue queda lista para dispararse desde ahí (GO / Espacio), con el pre-roll ya restado por `activate_memory`.
+    /// El tiempo se acota al archivo aunque la onda no esté lista (usa el fin que registró el daemon al cargar la cue):
+    /// un arranque fuera del archivo se ignoraría al reproducir y se vería un marcador verde imposible.
+    fn apply_memory_goto(&mut self, cue_id: u64, secs: f64) {
+        let wave = self.file_duration_of_draft();
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == cue_id) else { return };
+        let Some(t) = d.node.body.audio_mut().map(|a| &mut a.time_loops) else { return };
+        let max = wave.or_else(|| (t.end_time_sec > 0.0).then_some(t.end_time_sec)).unwrap_or(f64::INFINITY);
+        t.start_override_secs = Some(secs.clamp(0.0, max.max(0.0)));
+    }
+
     /// Renombra una memoria (panel de Memorias): al borrador abierto o, si la cue no está abierta, en cuanto cargue.
     /// Se guarda igual que cualquier edición de la cue (UpdateCue) y entra en el historial (Ctrl+Z la recupera).
     fn set_memory_rename(&mut self, cue_id: u64, index: usize, name: String) {
@@ -1875,6 +1883,11 @@ impl QlabApp {
         self.pending_resume
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_memory_goto_for_test(&self) -> Option<(u64, f64)> {
+        self.pending_memory_goto
+    }
+
     /// Guarda las preferencias y aplica lo que cambió (silencio de Windows).
     fn prefs_changed(&mut self) {
         if !self.prefs.resume_after_stop {
@@ -2090,9 +2103,8 @@ impl QlabApp {
         self.link.request(tag, ClientRequest::AddCue { kind: kind.into(), parent, after: Some(id) });
     }
 
-    /// Ir a una memoria. Si la cue suena, se detiene y se relanza desde ese punto en cuanto se guarde el arranque del salto;
-    /// ese punto es de una sola vez: al volver a pararse (o terminar) la cue recobra el arranque que tenía. Si la cue está
-    /// parada, el salto solo mueve el playhead y el cursor de edición: las memorias nunca cambian el punto de arranque.
+    /// Ir a una memoria. Si la cue suena, se detiene y se relanza desde ese punto en cuanto se guarde el nuevo punto de
+    /// arranque; si no, queda como siguiente en disparar (Espacio) y con el cursor de edición ahí.
     fn activate_memory(&mut self, ctx: &egui::Context, id: u64, marker: f64, shift: bool) {
         // Pre-roll: arranca unos segundos antes del marcador (Shift+clic aplica 2 s aunque esté apagado).
         let pre = match (self.memories_panel.preroll, shift) {
@@ -2100,11 +2112,11 @@ impl QlabApp {
             (p, _) => p,
         };
         let secs = views::memories::preroll_start(marker, pre);
+        if pre > 0 {
+            let name = self.model.summary(id).and_then(|c| c.memories.iter().find(|m| (m.secs - marker).abs() < 1e-6)).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{marker:.1} s"));
+            self.hud(format!("Pre-roll: -{:.1}s -> Memoria [{name}]", marker - secs));
+        }
         if self.telemetry.running.get(&id).is_some_and(|i| i.phase.is_some()) {
-            if pre > 0 {
-                let name = self.model.summary(id).and_then(|c| c.memories.iter().find(|m| (m.secs - marker).abs() < 1e-6)).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{marker:.1} s"));
-                self.hud(format!("Pre-roll: -{:.1}s -> Memoria [{name}]", marker - secs));
-            }
             self.link.fire(ClientRequest::CueAction { cue_id: id, action: qlab_protocol::show_format::ControlActionDto::Stop });
             let same = self.inspector.draft.as_ref().is_some_and(|d| d.id() == id && d.baseline.body.audio().is_some_and(|a| a.time_loops.start_override_secs == Some(secs)));
             if same {
@@ -2112,11 +2124,16 @@ impl QlabApp {
             } else {
                 self.restart_after_save = Some((id, secs));
             }
-            // El arranque del salto sirve una vez: cuando la cue se vuelva a parar, recobra el que tenía (el mismo `prev`
-            // si había un salto anterior aún sin devolver, para no perder el arranque original de la cue).
-            let prev = self.resume_points.get(&id).map_or_else(|| self.model.summary(id).and_then(|c| c.start_override_secs), |r| r.prev);
-            self.resume_points.insert(id, ResumePoint { prev, start: secs, fired: false });
+        } else if pre == 0 {
+            // Confirmación del armado en una cue que no estaba sonando (sobre todo si tampoco estaba abierta).
+            if let Some(c) = self.model.summary(id) {
+                self.hud(format!("Cue {} lista desde {}: Espacio", c.number, crate::format::fmt_time(secs)));
+            }
         }
+        // El punto de arranque se aplica cuando el borrador de la cue esté cargado. Si es otra cue, el detalle llega por
+        // IPC unas frames más tarde: queda pendiente como los demás pedidos del panel, sin depender de que la pestaña
+        // llegue a dibujarse (el temporal `memory_goto` solo mueve el cursor de edición).
+        self.pending_memory_goto = Some((id, secs));
         ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("memory_goto"), (id, secs)));
         self.inspector.tab = crate::views::inspector::Tab::TimeLoops;
         self.select(id);
@@ -2357,10 +2374,20 @@ impl QlabApp {
                 self.apply_memory_time(from, to);
             }
         }
-        if let Some((id, index, name)) = self.pending_memory_rename {
+        if let Some((id, secs)) = self.pending_memory_goto {
+            if self.model.summary(id).is_none() {
+                // La cue del salto se borró mientras su detalle iba en camino: el pedido quedó sin destinatario.
+                self.pending_memory_goto = None;
+            } else if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                self.pending_memory_goto = None;
+                self.apply_memory_goto(id, secs);
+            }
+        }
+        if let Some((id, index, name)) = self.pending_memory_rename.take() {
             if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
-                self.pending_memory_rename = None;
                 self.apply_memory_rename(id, index, name);
+            } else {
+                self.pending_memory_rename = Some((id, index, name));
             }
         }
         if let Some((id, index)) = self.pending_memory_delete {
@@ -2373,17 +2400,6 @@ impl QlabApp {
             if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
                 self.pending_memory_reorder = None;
                 self.apply_memory_reorder(id, from, to);
-            }
-        }
-        // Salto en caliente (memoria con la cue sonando): cuando la cue ya se detuvo y el borrador está cargado, arma en él
-        // el arranque del salto — el daemon no acepta cambiar el arranque de una cue que suena. El envío dispara el relanzado.
-        if let Some((id, secs)) = self.restart_after_save {
-            if !self.sounding(id) {
-                if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) {
-                    if let Some(a) = d.node.body.audio_mut() {
-                        a.time_loops.start_override_secs = Some(secs);
-                    }
-                }
             }
         }
         self.autosave_tick(now);

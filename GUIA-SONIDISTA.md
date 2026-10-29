@@ -15,12 +15,12 @@ Todo esto también está en el manual del programa (tecla **F1**).
 
 ## Memorias (como las «Ubicaciones de memoria» de Pro Tools)
 1. **Marcar**: con la cue sonando pulse **M** (o **Enter**, también el del teclado numérico). Se captura ese instante y aparece el cuadro **«Nombre de la memoria:»** ya enfocado: escriba el nombre y **Enter** (vacío = «Memoria N»), **Esc** cancela. También sirve con la cue parada: haga clic en la onda y pulse M.
-2. En la **regla de la onda** queda un **rombo ámbar** con su nombre; un clic en el rombo salta a ese punto (sin cambiar el arranque), y **sosteniéndolo y arrastrando** se mueve: una línea roja cruza toda la onda (para alinear con una entrada musical) y un rótulo muestra el nombre y el tiempo exacto; al soltar se guarda en ese frame. También se puede **escribir el tiempo** (clic sobre él: `01:14.5`, `1:14` o `74.5`).
+2. En la **regla de la onda** queda un **rombo ámbar** con su nombre; un clic en el rombo salta a ese punto, y **sosteniéndolo y arrastrando** se mueve: una línea roja cruza toda la onda (para alinear con una entrada musical) y un rótulo muestra el nombre y el tiempo exacto; al soltar se guarda en ese frame. También se puede **escribir el tiempo** (clic sobre él: `01:14.5`, `1:14` o `74.5`).
 3. **Ver → Memorias…** abre un **panel lateral** (izquierda o derecha, botón «A la derecha / A la izquierda») que no tapa la tabla de cues: lista numerada `#1  00:12.345  1er levantada` con la cue y la nota. El campo **«Buscar memoria…»** filtra por nombre, nota o cue. Cada fila tiene **Renombrar** (cambia el nombre en línea: Enter guarda, Esc cancela) y **Quitar** (elimina la memoria; Deshacer la devuelve). Las filas se pueden **reordenar arrastrándolas** a otra posición de su misma cue (una línea ámbar marca dónde caerán); el orden queda guardado con el show.
-4. **Un clic en una fila** lleva a esa cue y pone el playhead y el cursor de edición en el punto; **no cambia el arranque** de la cue (Espacio la dispara desde donde esté configurado):
-   - cue parada: el playhead sobre ella y el cursor de edición en el punto;
-   - cue sonando: salta a ese punto y **sigue sonando** desde ahí; al volver a pararse (o al terminar) la cue recobra el arranque que tenía.
-5. «Arrancar aquí» (en la lista de memorias de la cue) sí fija el punto de arranque en esa memoria, y «Desde el inicio» lo quita.
+4. **Un clic en una fila**:
+   - cue parada: queda lista, el playhead sobre ella, y **Espacio** la dispara desde ese punto (también si la cue no estaba abierta: se selecciona y el punto queda puesto);
+   - cue sonando: salta a ese punto y **sigue sonando** desde ahí.
+5. «Desde el inicio» (en la lista de memorias de la cue) quita el punto de arranque.
 
 ## Ecualizador (EQ) por cue
 Pestaña **EQ** de la cue de audio: active «Ecualizador activo» y arrastre los 4 puntos de la curva (izquierda/derecha = frecuencia, arriba/abajo = ganancia). La **rueda** sobre un punto cambia la Q y el **doble clic** activa o desactiva esa banda. La tabla de abajo permite poner frecuencia, ganancia, Q y tipo de filtro con el teclado. Suena en vivo y se guarda con el show.

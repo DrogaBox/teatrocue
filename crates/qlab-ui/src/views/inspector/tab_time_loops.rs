@@ -258,11 +258,13 @@ pub fn show(ui: &mut Ui, d: &mut Draft, cx: &mut TabCtx, out: &mut InspectorOutp
     let edit_id = ui.scope_id().with(("edit_cursor", cue_id));
     let mut edit_cursor: Option<f64> = ui.data(|d| d.get_temp(edit_id));
     // Pedido de la ventana global de Memorias: llevar el cursor de edición a una memoria de esta cue.
-    // Solo mueve el cursor: las memorias no cambian el punto de arranque (eso lo hace «Arrancar aquí»).
     let goto_id = egui::Id::NULL.with("memory_goto");
     if let Some((id, secs)) = ui.ctx().data(|d| d.get_temp::<(u64, f64)>(goto_id)) {
         if id == cue_id {
             edit_cursor = Some(secs.clamp(0.0, duration));
+            // Elegir una memoria deja la cue lista para dispararse desde ahí (GO / Espacio). Lo mismo se aplica por
+            // `pending_memory_goto` cuando el borrador carga: este temporal es el camino rápido si la pestaña ya está abierta.
+            t.start_override_secs = Some(secs.clamp(0.0, duration));
             ui.ctx().data_mut(|d| d.remove::<(u64, f64)>(goto_id));
         }
     }

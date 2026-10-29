@@ -146,7 +146,10 @@ pub fn save_recent(path: &std::path::Path, list: &[PathBuf]) -> Result<(), Strin
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(list).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
+    // Escritura atómica (temporal + renombrar): un corte de luz a mitad de escritura no daña la lista.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(list).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]

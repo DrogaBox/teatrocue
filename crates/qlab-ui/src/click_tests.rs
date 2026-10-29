@@ -1311,7 +1311,7 @@ fn pressing_m_while_the_cue_plays_captures_that_point_names_it_and_shows_it_in_t
 }
 
 #[test]
-fn the_memories_panel_filters_docks_to_either_side_and_a_wave_flag_click_does_not_change_the_start_point() {
+fn the_memories_panel_filters_docks_to_either_side_and_a_wave_flag_click_arms_that_point() {
     let mut f = fixture("mempanel");
     {
         let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
@@ -1342,12 +1342,9 @@ fn the_memories_panel_filters_docks_to_either_side_and_a_wave_flag_click_does_no
     f.h.get_by_label("A la derecha").click();
     f.h.step();
     assert!(app(&f.h).memories_panel.right, "ahora a la derecha");
-    // Un clic en la bandera de la onda lleva el playhead y el cursor de edición ahí y NO cambia el punto de arranque:
-    // las memorias nunca lo tocan (para eso está «Arrancar aquí» en la lista de la cue).
+    // Un clic en la bandera de la onda deja la cue lista para arrancar desde ese punto.
     f.h.get_by_label("Memoria 2: reloj circulo").click_accesskit();
-    pump(&mut f.h, "playhead en la cue 1 con el arranque intacto", |a| {
-        a.model.playhead == Some(1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs.is_none()))
-    });
+    pump(&mut f.h, "arranque guardado", |a| a.model.playhead == Some(1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(1.0))));
 }
 
 #[test]
@@ -1375,13 +1372,157 @@ fn the_global_memories_window_lists_every_cue_memory_and_jumps_to_it() {
     // Un clic en una memoria lleva a su cue y abre Time & Loops.
     f.h.get_all_by_label_contains("reloj circulo").next().unwrap().click();
     pump(&mut f.h, "salta a la cue 1 en Time & Loops", |a| a.model.selected == Some(1) && a.inspector.draft.as_ref().is_some_and(|d| d.id() == 1) && a.inspector.tab == Tab::TimeLoops);
-    // Elegir la memoria lleva el playhead ahí pero NO cambia el arranque: Espacio dispara la cue desde su inicio.
-    pump(&mut f.h, "playhead en la cue 1 con el arranque intacto", |a| {
-        a.model.playhead == Some(1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs.is_none()))
+    // Elegir la memoria deja la cue lista: el playhead está en ella y arrancará desde 1,0 s al pulsar Espacio
+    // (aunque su detalle haya tenido que cargarse por IPC: el armado queda pendiente hasta que el borrador existe).
+    pump(&mut f.h, "playhead en la cue 1 y arranque guardado", |a| {
+        a.model.playhead == Some(1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(1.0)))
     });
     f.h.key_press(egui::Key::Space);
-    pump(&mut f.h, "la cue 1 suena desde su arranque", |a| {
-        a.model.state_of(1) == CueUiState::Running && a.inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs.is_none()))
+    pump(&mut f.h, "la cue 1 suena", |a| a.model.state_of(1) == CueUiState::Running);
+    // La cue suena desde el punto elegido (la pista dura 2 s: el cursor no puede estar antes de 1,0 s).
+    pump(&mut f.h, "el cursor real arranca en la memoria", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 48_000));
+}
+
+#[test]
+fn clicking_a_memory_of_a_cue_that_is_not_open_arms_it_and_space_fires_from_there() {
+    let mut f = fixture("memfar");
+    // Una memoria en la cue 2: se abre su detalle, se guarda y se vuelve a la cue 1 (la cue 2 queda sin abrir).
+    f.h.get_by_label("Pista 2").click();
+    pump(&mut f.h, "cue 2 abierta", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 2 && !d.dirty()));
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "media".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria de la cue 2 guardada", |a| {
+        a.model.summary(2).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty())
+    });
+    f.h.get_by_label("Pista 1").click();
+    pump(&mut f.h, "de vuelta en la cue 1", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 1));
+    // Clic en la memoria de la cue NO abierta: la cue se selecciona, su detalle carga por IPC y el punto de arranque
+    // se aplica cuando el borrador existe (pendiente del panel), aunque la pestaña tarde en dibujarse.
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("media").next().unwrap().click();
+    pump(&mut f.h, "cue 2 armada desde la memoria", |a| {
+        a.model.playhead == Some(2)
+            && a.inspector.draft.as_ref().is_some_and(|d| d.id() == 2 && !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(0.5)))
+    });
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "la cue 2 suena desde la memoria", |a| {
+        a.model.state_of(2) == CueUiState::Running && a.telemetry.running.get(&2).is_some_and(|i| i.source_frame >= 24_000)
+    });
+}
+
+#[test]
+fn a_memory_beyond_the_cue_length_arms_clamped_to_the_file() {
+    let mut f = fixture("memclamp");
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 99.0, name: "lejos".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria guardada", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("lejos").next().unwrap().click();
+    // Un arranque fuera del archivo se ignoraría al reproducir y dejaría un marcador verde imposible: se acota
+    // al fin del archivo (la onda si está lista; si no, el fin que registró el daemon al cargar la cue).
+    pump(&mut f.h, "arranque acotado al fin del archivo", |a| start_override(a) == Some(2.0));
+}
+
+#[test]
+fn two_quick_memory_clicks_keep_only_the_last_arm() {
+    let mut f = fixture("memtwice");
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![
+            qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "una".into(), note: String::new() },
+            qlab_protocol::cue_dto::MemoryMark { secs: 1.0, name: "dos".into(), note: String::new() },
+        ];
+    }
+    pump(&mut f.h, "memorias guardadas", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 2) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("una").next().unwrap().click();
+    f.h.step();
+    f.h.get_all_by_label_contains("dos").next().unwrap().click();
+    // Un solo pedido pendiente: el último clic es el que manda (mismo criterio que el temporal que había).
+    pump(&mut f.h, "queda el armado de la segunda", |a| start_override(a) == Some(1.0));
+}
+
+#[test]
+fn a_memory_click_while_another_cue_plays_does_not_stop_it() {
+    let mut f = fixture("memnoplay");
+    f.h.get_by_label("Pista 2").click();
+    pump(&mut f.h, "cue 2 abierta", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 2 && !d.dirty()));
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "media".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria de la cue 2 guardada", |a| a.model.summary(2).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    f.h.get_by_label("Pista 1").click();
+    pump(&mut f.h, "cue 1 seleccionada", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 1));
+    f.h.get_by_label("GO").click();
+    pump(&mut f.h, "la cue 1 suena", |a| a.model.state_of(1) == CueUiState::Running);
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("media").next().unwrap().click();
+    // La memoria es de la cue 2 (parada): se arma y queda en el playhead sin tocar la reproducción de la cue 1.
+    pump(&mut f.h, "cue 2 armada y la cue 1 sigue sonando", |a| {
+        a.model.state_of(1) == CueUiState::Running
+            && a.model.playhead == Some(2)
+            && a.inspector.draft.as_ref().is_some_and(|d| d.id() == 2 && !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(0.5)))
+    });
+}
+
+#[test]
+fn deleting_the_cue_of_a_pending_memory_goto_drops_it() {
+    let mut f = fixture("memgone");
+    f.h.get_by_label("Pista 3").click();
+    pump(&mut f.h, "cue 3 abierta", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 3 && !d.dirty()));
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "borrable".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria de la cue 3 guardada", |a| a.model.summary(3).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    f.h.get_by_label("Pista 1").click();
+    pump(&mut f.h, "de vuelta en la cue 1", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == 1));
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("borrable").next().unwrap().click();
+    // Se borra la cue del salto sin esperar al detalle: el pedido no puede quedarse colgado ni aplicarse a otra cue.
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::DeleteSelected);
+    pump(&mut f.h, "cue borrada y sin pedido pendiente colgado", |a| {
+        a.model.summary(3).is_none() && a.pending_memory_goto_for_test().is_none()
+    });
+}
+
+#[test]
+fn undo_and_redo_restore_memory_edits() {
+    let mut f = fixture("memundo");
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "viejo".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria guardada", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories[0].name = "nuevo".into();
+    }
+    pump(&mut f.h, "renombrada y guardada", |a| {
+        a.model.summary(1).is_some_and(|c| c.memories[0].name == "nuevo") && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty())
+    });
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::Undo);
+    pump(&mut f.h, "deshacer devuelve el nombre viejo", |a| {
+        a.model.summary(1).is_some_and(|c| c.memories[0].name == "viejo") && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty())
+    });
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::Redo);
+    pump(&mut f.h, "rehacer vuelve el nombre nuevo", |a| {
+        a.model.summary(1).is_some_and(|c| c.memories[0].name == "nuevo") && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty())
     });
 }
 
@@ -1390,7 +1531,7 @@ fn picking_a_memory_while_the_cue_plays_jumps_there_and_keeps_playing() {
     let mut f = fixture("memjump");
     {
         let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
-        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "giselle al medio".into(), note: String::new() }];
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 1.0, name: "giselle al medio".into(), note: String::new() }];
     }
     pump(&mut f.h, "memoria guardada", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
     // La cue 1 (2 s de audio) suena desde el principio.
@@ -1401,16 +1542,10 @@ fn picking_a_memory_while_the_cue_plays_jumps_there_and_keeps_playing() {
     f.h.step();
     f.h.step();
     f.h.get_all_by_label_contains("giselle al medio").next().unwrap().click();
-    // Salta a 0,5 s y sigue sonando desde ahí: la lectura pasa de 0,5 s mucho antes de lo que tardaría sonando desde el principio.
-    pump(&mut f.h, "relanzada desde la memoria", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 24_000) && a.model.state_of(1) == CueUiState::Running);
+    // Salta a 1,0 s y sigue sonando desde ahí: la lectura pasa de 1,0 s mucho antes de lo que tardaría sonando desde el principio.
+    pump(&mut f.h, "relanzada desde la memoria", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 48_000) && a.model.state_of(1) == CueUiState::Running);
     assert!(t0.elapsed() < Duration::from_millis(900), "{:?}", t0.elapsed());
-    assert!(app(&f.h).inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(0.5))));
-    // El arranque del salto sirve una vez: al parar, la cue recobra el arranque que tenía (ninguno).
-    app_mut(&mut f.h).apply_for_test(crate::views::Action::StopAll);
-    pump(&mut f.h, "al parar vuelve al arranque original", |a| {
-        !matches!(a.model.state_of(1), CueUiState::Running | CueUiState::PreWaiting | CueUiState::Paused)
-            && a.inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs.is_none()))
-    });
+    assert!(app(&f.h).inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(1.0))));
 }
 
 #[test]
@@ -1680,48 +1815,32 @@ fn the_preroll_selector_moves_the_jump_before_the_marker_shows_a_notice_and_is_r
     f.h.get_all_by_label("4s").next().unwrap().click();
     pump(&mut f.h, "pre-roll de 4 s", |a| a.memories_panel.preroll == 4);
     // La pista dura 2 s: 1,5 s − 4 s se queda en el inicio del archivo, y el aviso dice cuánto se adelantó.
-    // El salto es en caliente (la cue suena): el arranque armado es el punto del salto, de una sola vez.
-    f.h.get_by_label("GO").click();
-    pump(&mut f.h, "suena", |a| a.model.state_of(1) == CueUiState::Running);
-    f.h.get_by_label("#1  1er levantada").click();
-    pump(&mut f.h, "salto armado desde el inicio", |a| start_override(a) == Some(0.0));
+    f.h.get_all_by_label_contains("1er levantada").next().unwrap().click();
+    pump(&mut f.h, "arranque desde el inicio", |a| start_override(a) == Some(0.0));
     assert_eq!(app(&f.h).hud_text(), Some("Pre-roll: -1.5s -> Memoria [1er levantada]"));
     // Con Off salta exacto al marcador.
-    app_mut(&mut f.h).apply_for_test(crate::views::Action::StopAll);
-    pump(&mut f.h, "parada", |a| !matches!(a.model.state_of(1), CueUiState::Running));
     f.h.get_all_by_label("Off").next().unwrap().click();
     pump(&mut f.h, "pre-roll apagado", |a| a.memories_panel.preroll == 0);
-    f.h.get_by_label("GO").click();
-    pump(&mut f.h, "suena otra vez", |a| a.model.state_of(1) == CueUiState::Running);
-    f.h.get_by_label("#1  1er levantada").click();
-    pump(&mut f.h, "salto exacto al marcador", |a| start_override(a) == Some(1.5));
+    f.h.get_all_by_label_contains("1er levantada").next().unwrap().click();
+    pump(&mut f.h, "arranque exacto", |a| start_override(a) == Some(1.5));
     // Shift+clic aplica 2 s a ese salto aunque esté apagado.
-    app_mut(&mut f.h).apply_for_test(crate::views::Action::StopAll);
-    pump(&mut f.h, "parada de nuevo", |a| !matches!(a.model.state_of(1), CueUiState::Running));
-    f.h.get_by_label("GO").click();
-    pump(&mut f.h, "suena otra vez", |a| a.model.state_of(1) == CueUiState::Running);
-    f.h.get_by_label("#1  1er levantada").click_modifiers(Modifiers::SHIFT);
+    f.h.get_all_by_label_contains("1er levantada").next().unwrap().click_modifiers(egui::Modifiers::SHIFT);
     pump(&mut f.h, "shift: 2 s antes", |a| start_override(a).is_some_and(|s| (s - 0.0).abs() < 1e-9));
     assert!(app(&f.h).hud_text().is_some_and(|t| t.starts_with("Pre-roll: -1.5s")));
 }
 
 #[test]
-fn a_memory_jump_while_the_cue_plays_relaunches_it_from_the_chosen_point() {
+fn a_memory_jump_starts_the_cue_from_the_chosen_point_with_the_micro_fade() {
     let mut f = fixture("prefade");
-    with_memory(&mut f, 0.5, "mitad");
-    f.h.get_by_label("GO").click();
-    pump(&mut f.h, "suena", |a| a.model.state_of(1) == CueUiState::Running);
+    with_memory(&mut f, 1.0, "mitad");
     {
         let ctx = f.h.ctx.clone();
-        app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 0.5);
+        app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 1.0);
     }
-    // La cue se detiene, se le arma el arranque del salto (de una sola vez) y se relanza desde ahí.
-    pump(&mut f.h, "relanzada desde la memoria", |a| {
-        a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 24_000)
-            && a.model.state_of(1) == CueUiState::Running
-            && a.inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| b.time_loops.start_override_secs == Some(0.5)))
-    });
-    // La pista dura 2 s y arranca en 0,5 s: cuando se ve la lectura puede haber terminado ya.
+    pump(&mut f.h, "arranque desde 1 s guardado", |a| start_override(a) == Some(1.0));
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "suena desde la memoria", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 48_000));
+    // La pista dura 2 s y arranca en 1 s: cuando se ve la lectura puede haber terminado ya.
     assert!(matches!(app(&f.h).model.state_of(1), CueUiState::Running | CueUiState::Completed));
 }
 
@@ -2159,8 +2278,7 @@ fn dragging_a_memory_flag_moves_it_with_a_guide_line_snaps_to_a_frame_keeps_the_
     pump(&mut f.h, "guardado y show marcado como modificado", |a| a.show_dirty && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()) && a.model.summary(1).is_some_and(|c| c.memories.iter().any(|m| m.name == "uno" && (m.secs - moved).abs() < 1e-9)));
     assert!(app(&f.h).window_title().contains('*'));
 
-    // Un clic simple (sin arrastrar) sigue saltando a la memoria: lleva el cursor de edición al punto
-    // y no cambia el punto de arranque de la cue (las memorias nunca lo tocan).
+    // Un clic simple (sin arrastrar) sigue saltando a la memoria y arma el arranque en ese punto.
     let flag = rect_of(&f.h, "Memoria 2: dos").center();
     f.h.hover_at(flag);
     f.h.step();
@@ -2168,10 +2286,7 @@ fn dragging_a_memory_flag_moves_it_with_a_guide_line_snaps_to_a_frame_keeps_the_
     f.h.step();
     f.h.drop_at(flag);
     f.h.step();
-    f.h.step();
-    let cursor = f.h.ctx.data(|d| d.get_temp::<(u64, Option<f64>)>(egui::Id::NULL.with("edit_cursor_pub")));
-    assert_eq!(cursor, Some((1, Some(1.0))), "el clic lleva el cursor de edición a la memoria");
-    assert_eq!(start_override(app(&f.h)), None, "el clic no arma el punto de arranque");
+    pump(&mut f.h, "el clic arma «dos» como punto de arranque", |a| start_override(a) == Some(1.0));
 }
 
 #[test]
