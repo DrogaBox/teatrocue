@@ -143,7 +143,11 @@ jobs:
             libxkbcommon-x11-dev \
             libwayland-dev \
             libgl1 \
-            libegl1
+            libegl1 \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            clang \
+            libclang-dev
 
       - name: Compilar interfaz, daemon y admin
         run: cargo build --release -p qlab-ui -p qlab-daemon -p teatrocue-admin
