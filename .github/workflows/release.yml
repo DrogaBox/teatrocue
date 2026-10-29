@@ -54,7 +54,7 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Compilar interfaz, daemon, admin e instalador (MSVC: sin DLL de MinGW)
+      - name: Compilar interfaz, daemon, admin e instalador (MSVC, sin DLL de MinGW)
         run: cargo build --release -p qlab-ui -p qlab-daemon -p teatrocue-admin -p installer-win
 
       # ffmpeg.exe y ffprobe.exe estáticos (soporte de vídeo), igual que hace scripts/build_usb_installer.sh:
