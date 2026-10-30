@@ -557,6 +557,12 @@ fn write_line(writer: &Mutex<SendHalf>, json: &str) -> io::Result<()> {
 
 /// Una conexión: lee peticiones, responde, y si se suscribió reenvía los eventos del daemon.
 fn serve(stream: Stream, ctx: Arc<IpcContext>) {
+    // En macOS (BSD) la conexión aceptada hereda el modo no bloqueante del socket que escucha; sin esto la
+    // primera lectura sin datos da `WouldBlock` y la conexión se corta.
+    if let Err(e) = stream.set_nonblocking(false) {
+        eprintln!("[ipc] no se pudo poner la conexión en modo bloqueante: {e}");
+        return;
+    }
     let (recv, send) = stream.split();
     let writer = Arc::new(Mutex::new(send));
     let mut reader = BufReader::new(recv);
