@@ -80,7 +80,7 @@ mod imp {
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::{Path, PathBuf};
 
-    fn path_for(name: &str) -> io::Result<PathBuf> {
+    pub(super) fn path_for(name: &str) -> io::Result<PathBuf> {
         let trimmed = name.trim_start_matches('/');
         if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains("..") {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("nombre de memoria compartida inválido: {name}")));
@@ -276,7 +276,7 @@ mod tests {
         assert!(SharedMemory::create("").is_err());
         assert!(SharedMemory::create("..").is_err());
         let name = unique("junk");
-        let path = std::path::Path::new("/dev/shm").join(&name);
+        let path = imp::path_for(&name).unwrap();
         std::fs::write(&path, vec![0xFFu8; SHM_SIZE]).unwrap();
         let err = SharedMemory::open(&name).err().expect("magic inválido");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
