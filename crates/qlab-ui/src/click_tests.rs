@@ -1845,6 +1845,47 @@ fn a_memory_jump_starts_the_cue_from_the_chosen_point_with_the_micro_fade() {
 }
 
 #[test]
+fn a_memory_jump_serves_one_go_and_the_cue_starts_from_its_beginning_the_next_time() {
+    let mut f = fixture("memonce");
+    with_memory(&mut f, 1.0, "mitad");
+    {
+        let ctx = f.h.ctx.clone();
+        app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 1.0);
+    }
+    pump(&mut f.h, "armada desde la memoria", |a| start_override(a) == Some(1.0));
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "suena desde la memoria", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame >= 48_000));
+    // Al terminar, la cue vuelve a su inicio: volver a ella y dar GO la hace sonar desde el principio.
+    pump(&mut f.h, "termina y vuelve a su inicio", |a| {
+        a.model.state_of(1) == CueUiState::Completed && a.memory_arms_for_test() == 0 && a.model.summary(1).is_some_and(|c| c.start_override_secs.is_none())
+    });
+    f.h.key_press(egui::Key::ArrowUp);
+    pump(&mut f.h, "playhead en la cue 1", |a| a.model.playhead == Some(1));
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "vuelve a sonar", |a| a.telemetry.running.get(&1).is_some_and(|i| i.source_frame > 0));
+    let first = app(&f.h).telemetry.running.get(&1).unwrap().source_frame as f64 / 48_000.0;
+    assert!(first < 0.9, "suena desde el principio, no desde la memoria (leyó desde {first:.2} s)");
+}
+
+#[test]
+fn a_memory_armed_and_saved_is_not_written_to_the_show() {
+    let mut f = fixture("memsave");
+    with_memory(&mut f, 1.0, "mitad");
+    {
+        let ctx = f.h.ctx.clone();
+        app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 1.0);
+    }
+    pump(&mut f.h, "armada desde la memoria", |a| start_override(a) == Some(1.0) && a.model.summary(1).is_some_and(|c| c.start_override_secs == Some(1.0)));
+    let out = std::env::temp_dir().join(format!("qlab-ui-memarm-save-{}.json", std::process::id()));
+    app_mut(&mut f.h).save_show_as_for_test(&out);
+    pump(&mut f.h, "guardado", |_| out.is_file());
+    let saved = std::fs::read_to_string(&out).unwrap();
+    assert!(!saved.contains("start_override_secs"), "el show guardado no lleva la memoria armada");
+    pump(&mut f.h, "sigue armada para este GO", |a| a.model.summary(1).is_some_and(|c| c.start_override_secs == Some(1.0)));
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn the_rehearsal_speed_buttons_change_the_rate_live_without_restarting_the_cue() {
     let mut f = fixture("varispeed");
     app_mut(&mut f.h).inspector.tab = Tab::TimeLoops;

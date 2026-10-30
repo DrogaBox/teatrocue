@@ -207,6 +207,8 @@ pub struct QlabApp {
     resume_since: Option<Instant>,
     /// Cues con un punto de «retomar» puesto: el arranque que tenían antes (se les devuelve) y si ya se dispararon desde ahí.
     resume_points: HashMap<u64, ResumePoint>,
+    /// Cues armadas desde una memoria: sirve para un solo GO; al terminar o pararse, la cue vuelve a su arranque de antes.
+    memory_arms: HashMap<u64, ResumePoint>,
     pub react: views::reactivation::ReactivationState,
     pub history: crate::history::History,
     /// Ventana global «Memorias».
@@ -325,6 +327,7 @@ impl QlabApp {
             pending_resume: None,
             resume_since: None,
             resume_points: HashMap::new(),
+            memory_arms: HashMap::new(),
             news_waiting: cfg.settings_path.as_deref().map(crate::novedades::seen_path).is_some_and(|p| crate::novedades::should_show(&p)),
             react: Default::default(),
             history: Default::default(),
@@ -1193,7 +1196,13 @@ impl QlabApp {
         // Un guardado pendiente de edición: primero se confirma lo que haya en el Inspector.
         let name = show_name_of(&path);
         // Los puntos de «retomar» del ensayo no se guardan en el show: se quitan para guardar y se vuelven a poner.
-        let rehearsal: Vec<(u64, Option<f64>, f64)> = self.resume_points.iter().filter(|(id, _)| !self.sounding(**id)).map(|(&id, r)| (id, r.prev, r.start)).collect();
+        let rehearsal: Vec<(u64, Option<f64>, f64)> = self
+            .resume_points
+            .iter()
+            .chain(self.memory_arms.iter().filter(|(id, _)| !self.resume_points.contains_key(id)))
+            .filter(|(id, _)| !self.sounding(**id))
+            .map(|(&id, r)| (id, r.prev, r.start))
+            .collect();
         for &(id, prev, _) in &rehearsal {
             self.send_start_point(id, prev);
         }
@@ -1817,7 +1826,11 @@ impl QlabApp {
             self.pending_resume = None;
             self.resume_since = None;
         } else if !sounding {
-            let prev = self.resume_points.get(&id).map_or_else(|| self.model.summary(id).and_then(|c| c.start_override_secs), |r| r.prev);
+            let prev = match (self.memory_arms.remove(&id), self.resume_points.get(&id)) {
+                (Some(arm), _) => arm.prev,
+                (None, Some(rp)) => rp.prev,
+                (None, None) => self.model.summary(id).and_then(|c| c.start_override_secs),
+            };
             self.resume_points.insert(id, ResumePoint { prev, start, fired: false });
             self.send_start_point(id, Some(start));
             self.pending_resume = None;
@@ -1854,6 +1867,34 @@ impl QlabApp {
         }
     }
 
+    /// Un salto a memoria sirve para un GO: cuando la cue que arrancó desde la memoria termina o se para, vuelve a su
+    /// arranque de antes, y la próxima vez que se llegue a ella suena desde su inicio. Mientras la cue se está relanzando
+    /// (memoria elegida con la cue sonando) o espera un «retomar», no se toca.
+    fn tick_memory_arms(&mut self) {
+        let ids: Vec<u64> = self.memory_arms.keys().copied().collect();
+        for id in ids {
+            let sounding = self.sounding(id);
+            let relaunching = self.restart_after_save.is_some_and(|(r, _)| r == id)
+                || self.restart_due.is_some_and(|(_, r)| r == id)
+                || self.pending_resume.is_some_and(|(r, _)| r == id);
+            let current = self.model.summary(id).and_then(|c| c.start_override_secs);
+            let Some(arm) = self.memory_arms.get_mut(&id) else { continue };
+            if relaunching {
+                continue;
+            }
+            if sounding {
+                arm.fired = true;
+            } else if arm.fired {
+                let (prev, start) = (arm.prev, arm.start);
+                self.memory_arms.remove(&id);
+                // Si mientras tanto se puso otro arranque a mano, se respeta.
+                if current == Some(start) {
+                    self.send_start_point(id, prev);
+                }
+            }
+        }
+    }
+
     /// Devuelve a su arranque original todas las cues con un punto de «retomar» (las que suenan, al terminar).
     fn restore_resume_points(&mut self) {
         let ids: Vec<u64> = self.resume_points.keys().copied().collect();
@@ -1871,6 +1912,11 @@ impl QlabApp {
     #[cfg(test)]
     pub(crate) fn save_show_as_for_test(&mut self, path: &std::path::Path) {
         self.save_to(path.to_path_buf());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn memory_arms_for_test(&self) -> usize {
+        self.memory_arms.len()
     }
 
     #[cfg(test)]
@@ -2133,6 +2179,12 @@ impl QlabApp {
         // El punto de arranque se aplica cuando el borrador de la cue esté cargado. Si es otra cue, el detalle llega por
         // IPC unas frames más tarde: queda pendiente como los demás pedidos del panel, sin depender de que la pestaña
         // llegue a dibujarse (el temporal `memory_goto` solo mueve el cursor de edición).
+        let prev = match (self.memory_arms.get(&id), self.resume_points.get(&id)) {
+            (Some(arm), _) => arm.prev,
+            (None, Some(rp)) => rp.prev,
+            (None, None) => self.model.summary(id).and_then(|c| c.start_override_secs),
+        };
+        self.memory_arms.insert(id, ResumePoint { prev, start: secs, fired: false });
         self.pending_memory_goto = Some((id, secs));
         ctx.data_mut(|d| d.insert_temp(egui::Id::NULL.with("memory_goto"), (id, secs)));
         self.inspector.tab = crate::views::inspector::Tab::TimeLoops;
@@ -2448,6 +2500,7 @@ impl QlabApp {
         }
         self.drive_resume(ctx);
         self.tick_resume_points();
+        self.tick_memory_arms();
         self.maybe_commit(ctx);
         if std::mem::take(&mut self.refresh_cues) && self.is_connected() {
             self.request_cues();
