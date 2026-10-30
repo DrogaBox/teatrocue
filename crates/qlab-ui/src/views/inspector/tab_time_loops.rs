@@ -125,7 +125,7 @@ fn boxed(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
 }
 
 /// Velocidades de ensayo de acceso directo.
-pub const REHEARSAL_RATES: [(&str, f32); 4] = [("0.90× (-10%)", 0.90), ("0.95× (-5%)", 0.95), ("1.00× Normal", 1.0), ("1.05× (+5%)", 1.05)];
+pub const REHEARSAL_RATES: [(&str, f32); 7] = [("0.80×", 0.80), ("0.90×", 0.90), ("0.95×", 0.95), ("1.00× Normal", 1.0), ("1.05×", 1.05), ("1.10×", 1.10), ("1.20×", 1.20)];
 
 fn frame_of(secs: f64, sample_rate: u32) -> u64 {
     (secs.max(0.0) * sample_rate.max(1) as f64).round() as u64
@@ -362,6 +362,13 @@ pub fn show(ui: &mut Ui, d: &mut Draft, cx: &mut TabCtx, out: &mut InspectorOutp
                         t.rate = 1.0;
                     } else if r.clicked() {
                         t.rate = v;
+                    }
+                }
+                // De a 1 %, como las teclas - y +.
+                for (label, delta) in [("-1%", -1i32), ("+1%", 1)] {
+                    if ui.small_button(label).on_hover_text("También con las teclas - y + (Ctrl+= vuelve a 1.00×)").clicked() {
+                        let pct = (f64::from(t.rate) * 100.0).round() as i32 + delta;
+                        t.rate = pct.clamp(50, 200) as f32 / 100.0;
                     }
                 }
             });

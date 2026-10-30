@@ -38,7 +38,13 @@ NUEVO
    están ahora. Se buscan por nombre, también en las subcarpetas, y las cues quedan armadas
    con la ruta nueva. Después, guardar el show.
 
-6. Instalador con menú
+6. Herramientas de ensayo
+   Velocidad de a 1 % con las teclas - y + (también con la cue sonando); Ctrl+= vuelve a 1.00×.
+   Los botones de Time & Loops van de 0.80x a 1.20x. Bucle de ensayo: en el panel de Memorias,
+   Ctrl+clic en la memoria donde empieza y Ctrl+clic en la donde termina; la cue repite ese
+   tramo sin cortes hasta que se para con Esc, y vuelve a quedar como estaba (no se guarda en
+   el show). El reloj gigante muestra además la hora real y la próxima cue.
+7. Instalador con menú
    Al abrir Instalar_TeatroCue.exe con doble clic aparece un menú: instalar o actualizar,
    solo la licencia, reparar la licencia (si dice "Licencia no válida", esta es la opción),
    restablecer la fecha, sin acceso directo, en otra carpeta. Después pide la contraseña
@@ -52,21 +58,21 @@ NUEVO
 CORREGIDO
 ---------
 
-7. El panel de Memorias responde a los clics
+8. El panel de Memorias responde a los clics
    Hacer clic en una memoria, en PFL, en Renombrar o en Quitar dentro del panel no hacía
    nada. Ahora responden. Arrastrar una fila para cambiar el orden sigue funcionando.
 
-8. Elegir una memoria con la cue sonando
+9. Elegir una memoria con la cue sonando
    A veces la cue se paraba y no volvía a arrancar desde la memoria (aparecía "No se guardó:
    detén la cue antes de cambiar su archivo..."). Ahora corta rápido y relanza desde la
    memoria, sin esperar el fundido de parada.
 
-9. Bloqueo de función y teclado
+10. Bloqueo de función y teclado
    Con el Bloqueo (Ctrl+L) activo, Espacio, Esc y P llegan aunque un campo de texto tenga
    el foco (por ejemplo la búsqueda de memorias): el campo lo suelta y la tecla no se
    escribe en él. Al activar el bloqueo se suelta el foco de cualquier campo.
 
-10. Avisos repetidos al abrir un show
+11. Avisos repetidos al abrir un show
    Cada archivo que faltaba producía dos avisos iguales. Ahora, uno solo con la lista.
 
 

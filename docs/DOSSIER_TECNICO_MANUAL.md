@@ -259,6 +259,14 @@ Selector **Off / 2s / 4s** en el panel de memorias y en Time & Loops. Al saltar 
 
 `AudioTimeAndLoopsData.fade_in_secs` y `fade_out_secs` (0 a 60 s, `serde(default)`: los shows anteriores abren igual). Al arrancar, el núcleo manda `PlayFadeIn` con el mayor entre el fundido de entrada de la cue y el micro-fade de 50 ms de un arranque desde memoria; sin ninguno, `Play`. Al parar (`stop_cue`, `stop_all`, Stop de control) el fundido pedido se estira hasta `fade_out_secs` de la cue; la parada dura (`cut_all`, Esc Esc) corta con sus 2 ms exactos. Los fundidos globales (`SchedulerConfig.stop_fade_frames` para «Parar todo» y Stop de control, `panic_fade_frames` para Esc) ya no son fijos: la interfaz los manda al conectar y al cambiarlos con `ClientRequest::SetStopFades { stop_secs, panic_secs }` (0 a 30 s, mínimo 5 ms para no hacer clic), desde Preferencias → Fundidos al parar (`preferencias.json`: `stop_fade_secs`, `panic_fade_secs`, 1 s de fábrica cada uno). La columna Acción muestra `/entrada \salida`.
 
+### 3.1c Herramientas de ensayo
+
+**Velocidad con teclas.** Órdenes `SpeedDown` (`-`), `SpeedUp` (`+`, `=`) y `SpeedReset` (`Ctrl+=`), reasignables en Preferencias. Mueven `rate` de la cue abierta en el Inspector de a 1 % entre 0,50× y 2,00×; el daemon aplica `SetRate` en vivo (no recarga la voz). Los botones de Time & Loops ofrecen 0,80× a 1,20× y -1 %/+1 %. Bloqueadas con Show Lock.
+
+**Bucle de ensayo (Ctrl+clic en dos memorias).** `PanelEvent::Activate { ctrl }` → `loop_pick`: el primer Ctrl+clic guarda el borde inicial; el segundo, de la misma cue, arma el bucle: en el borrador la región pasa a `[A, B)` con `infinite_loop`, sin slices ni arranque aparte; si la cue suena, `CutCue` y relanzamiento desde A al confirmarse el guardado. `RehearsalLoop` conserva los tiempos originales (la primera versión, si se encadenan bucles). Esc, «Parar todo», el Bloqueo o un salto a memoria llaman a `end_rehearsal_loop`, que repone el original en el borrador (conservando memorias nuevas) y, si la cue aún suena, retiene el guardado con `hold_commit` hasta que se pare (la región no se cambia en caliente). Guardar con un bucle sonando se rechaza con aviso; parado, se repone y se guarda. El bucle nunca llega al archivo del show.
+
+**Reloj.** Bajo la cuenta regresiva: hora local (`format::local_hms`, `GetLocalTime` en Windows, `localtime_r` en Unix) y la cue en espera.
+
 ### 3.2 Slices y Vamping
 
 Concepto: los **slices** son marcadores de corte dentro de la región de una cue de audio/vídeo; cada marcador abre un tramo hasta el siguiente y define cuántas veces se repite (`AudioSliceMarker { frame, play_count, label }`).

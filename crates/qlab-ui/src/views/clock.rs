@@ -82,13 +82,18 @@ pub fn show(ui: &mut Ui, v: &ViewCtx, width: f32, font: f32) {
     let stroke = if alert == Alert::Normal { theme::GRID } else { color };
     let text = cd.map_or("--:--.-".to_string(), |c| fmt_countdown(c.remaining));
     egui::Frame::new().fill(theme::BG).stroke(egui::Stroke::new(if alert == Alert::Critical { 2.5 } else { 1.0 }, stroke)).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
-        ui.set_min_size(vec2(width, 46.0));
+        ui.set_min_size(vec2(width, 60.0));
         ui.set_max_width(width);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let who = cd.and_then(|c| v.model.summary(c.cue_id)).map_or_else(|| "RESTANTE".to_string(), |c| format!("RESTANTE · {}", crate::format::ellipsize(&c.number, 8)));
             ui.label(RichText::new(who).small().color(theme::TEXT_DIM));
             ui.add(egui::Label::new(RichText::new(text).monospace().size(font).strong().color(color)).extend());
+            // Hora real de la cabina y la cue que sigue, para cantar el GO sin mirar la lista.
+            let next = v.model.playhead.and_then(|id| v.model.summary(id)).map_or_else(|| "fin de la lista".to_string(), |c| format!("{} {}", c.number, crate::format::ellipsize(&c.name, 22)));
+            // Hora sin segundos: se refresca con cada repintado (reproducción, cualquier gesto) y en reposo la ventana no se
+            // repinta sola (0 % de CPU), así que un reloj de segundos mentiría.
+            ui.label(RichText::new(format!("{} · Próxima: {next}", &crate::format::local_hms()[..5])).small().color(theme::TEXT_DIM));
         });
     });
     if alert != Alert::Normal {

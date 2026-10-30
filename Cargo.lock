@@ -3594,6 +3594,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "egui_kittest",
+ "libc",
  "qlab-core",
  "qlab-daemon",
  "qlab-engine",

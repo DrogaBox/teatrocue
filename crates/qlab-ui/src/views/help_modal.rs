@@ -67,7 +67,7 @@ impl HelpState {
 }
 
 /// Atajos: tecla y qué hace.
-pub const SHORTCUTS: [(&str, &str); 19] = [
+pub const SHORTCUTS: [(&str, &str); 22] = [
     ("Espacio", "GO: dispara la cue en espera y avanza el playhead"),
     ("Esc", "Panic suave (fade corto de todo lo que suena)"),
     ("Esc, Esc", "Doble pulsación en menos de 0,7 s: parada dura inmediata"),
@@ -87,6 +87,9 @@ pub const SHORTCUTS: [(&str, &str); 19] = [
     ("Ctrl+Q", "Salir"),
     ("F1", "Este manual"),
     ("Arrastrar archivos", "Soltar audio o vídeo sobre la ventana crea cues; sobre el Inspector cambia el archivo de la cue"),
+    ("- / +", "Velocidad de ensayo de la cue abierta: -1 % / +1 % (en caliente)"),
+    ("Ctrl+=", "Velocidad de ensayo: vuelve a 1,00×"),
+    ("Ctrl+clic en dos memorias", "Bucle de ensayo entre ellas (panel de Memorias); Esc lo termina y la cue vuelve a como estaba"),
 ];
 
 fn heading(ui: &mut Ui, text: &str) {

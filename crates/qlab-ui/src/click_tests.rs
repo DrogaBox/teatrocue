@@ -2017,18 +2017,97 @@ fn cue_fades_are_edited_in_time_and_loops_saved_and_shown_in_the_action_column()
 }
 
 #[test]
+fn the_minus_and_plus_keys_nudge_the_rehearsal_speed_and_ctrl_equals_resets_it() {
+    let mut f = fixture("speedkeys");
+    let rate = |a: &QlabApp| a.inspector.draft.as_ref().and_then(|d| crate::views::inspector::time_loops_ref(&d.node)).map(|t| t.rate).unwrap();
+    for _ in 0..3 {
+        f.h.key_press(egui::Key::Minus);
+        f.h.step();
+    }
+    assert!((rate(app(&f.h)) - 0.97).abs() < 1e-6, "{}", rate(app(&f.h)));
+    assert_eq!(app(&f.h).hud_text(), Some("Velocidad 0.97×"));
+    f.h.key_press(egui::Key::Plus);
+    f.h.step();
+    assert!((rate(app(&f.h)) - 0.98).abs() < 1e-6);
+    f.h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Equals);
+    f.h.step();
+    assert!((rate(app(&f.h)) - 1.0).abs() < 1e-6);
+    assert_eq!(app(&f.h).hud_text(), Some("Velocidad 1.00× (normal)"));
+    // Con el bloqueo puesto no se toca.
+    app_mut(&mut f.h).toggle_lock();
+    f.h.key_press(egui::Key::Minus);
+    f.h.step();
+    assert!((rate(app(&f.h)) - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_clock_shows_the_local_time_and_the_next_cue() {
+    let mut f = fixture("clocknext");
+    f.h.step();
+    assert!(f.h.query_by_label_contains("Próxima: 1 Pista 1").is_some(), "la próxima cue es la del playhead");
+    let hms = crate::format::local_hms();
+    assert_eq!(hms.len(), 8, "{hms}");
+    assert!(hms.as_bytes()[2] == b':' && hms.as_bytes()[5] == b':');
+    f.h.key_press(egui::Key::ArrowDown);
+    pump(&mut f.h, "playhead en la 2", |a| a.model.playhead == Some(2));
+    f.h.step();
+    assert!(f.h.query_by_label_contains("Próxima: 2 Pista 2").is_some());
+}
+
+#[test]
+fn ctrl_clicking_two_memories_loops_the_passage_until_escape_restores_the_cue() {
+    let mut f = fixture("abloop");
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![
+            qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "ida".into(), note: String::new() },
+            qlab_protocol::cue_dto::MemoryMark { secs: 1.0, name: "vuelta".into(), note: String::new() },
+        ];
+    }
+    pump(&mut f.h, "memorias guardadas", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 2) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.get_all_by_label_contains("#1  ida").next().unwrap().click_modifiers(Modifiers::COMMAND);
+    f.h.step();
+    assert!(app(&f.h).hud_text().is_some_and(|t| t.starts_with("Bucle de ensayo desde")), "{:?}", app(&f.h).hud_text());
+    f.h.get_all_by_label_contains("#2  vuelta").next().unwrap().click_modifiers(Modifiers::COMMAND);
+    pump(&mut f.h, "bucle armado y guardado", |a| {
+        a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| b.time_loops.infinite_loop && (b.time_loops.start_time_sec - 0.5).abs() < 1e-9 && (b.time_loops.end_time_sec - 1.0).abs() < 1e-9))
+    });
+    assert_eq!(app(&f.h).rehearsal_loop_for_test(), Some(1));
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "suena", |a| a.model.state_of(1) == CueUiState::Running);
+    // La pista dura 2 s: a los 2,6 s sigue sonando porque repite entre 0,5 s y 1,0 s.
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(2_600) {
+        f.h.step();
+        assert_eq!(app(&f.h).model.state_of(1), CueUiState::Running, "se paró en {:?}", t0.elapsed());
+        let frame = app(&f.h).telemetry.running.get(&1).map_or(0, |i| i.source_frame);
+        assert!(frame < 48_000 + 9_600, "se pasó del final del bucle: {frame}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Esc: para y la cue vuelve a como estaba (sin slices ni arranque), sin tocar las memorias.
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "parada y restaurada", |a| {
+        a.model.state_of(1) != CueUiState::Running && a.rehearsal_loop_for_test().is_none()
+            && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty() && d.baseline.body.audio().is_some_and(|b| !b.time_loops.infinite_loop && b.time_loops.start_time_sec == 0.0 && b.time_loops.end_time_sec > 1.5 && b.time_loops.memories.len() == 2))
+    });
+}
+
+#[test]
 fn the_rehearsal_speed_buttons_change_the_rate_live_without_restarting_the_cue() {
     let mut f = fixture("varispeed");
     app_mut(&mut f.h).inspector.tab = Tab::TimeLoops;
     f.h.step();
     f.h.step();
-    for label in ["0.90× (-10%)", "0.95× (-5%)", "1.00× Normal", "1.05× (+5%)"] {
+    for label in ["0.80×", "0.90×", "0.95×", "1.00× Normal", "1.05×", "1.10×", "1.20×", "-1%", "+1%"] {
         assert!(f.h.query_by_label(label).is_some(), "falta el botón {label}");
     }
     f.h.get_by_label("GO").click();
     pump(&mut f.h, "suena", |a| a.model.state_of(1) == CueUiState::Running);
     let before = app(&f.h).telemetry.running.get(&1).map_or(0, |i| i.source_frame);
-    f.h.get_by_label("0.95× (-5%)").click();
+    f.h.get_by_label("0.95×").click();
     pump(&mut f.h, "velocidad guardada en caliente", |a| a.inspector.draft.as_ref().is_some_and(|d| d.baseline.body.audio().is_some_and(|b| (b.time_loops.rate - 0.95).abs() < 1e-6)));
     // Sigue sonando, sin reiniciar: la lectura no vuelve atrás.
     assert!(app(&f.h).model.state_of(1) == CueUiState::Running || app(&f.h).model.state_of(1) == CueUiState::Completed);
@@ -2166,7 +2245,7 @@ fn time_and_loops_controls_never_collapse_even_with_the_memories_panel_open_on_a
         f.h.step();
     }
     let inspector = app(&f.h).inspector_rect;
-    for label in ["Velocidad", "Bucles", "Fade integrado", "Fade sobre la forma de onda", "Atar a la cue", "Bucle infinito", "Repeticiones", "0.90× (-10%)", "1.05× (+5%)"] {
+    for label in ["Velocidad", "Bucles", "Fade integrado", "Fade sobre la forma de onda", "Atar a la cue", "Bucle infinito", "Repeticiones", "0.80×", "1.20×", "+1%"] {
         let r = rect_of(&f.h, label);
         assert!(r.right() <= inspector.right() + 1.0 && r.left() >= inspector.left() - 1.0, "«{label}» se sale del Inspector: {r:?} vs {inspector:?}");
         assert!(r.height() < 30.0, "«{label}» se partió en varias líneas: {r:?}");

@@ -71,8 +71,8 @@ pub struct PanelState {
 }
 
 pub enum PanelEvent {
-    /// Un clic en una fila: ir a esa memoria.
-    Activate { cue_id: u64, secs: f64, shift: bool },
+    /// Un clic en una fila: ir a esa memoria. `ctrl`: Ctrl+clic, elige esta memoria como borde del bucle de ensayo.
+    Activate { cue_id: u64, secs: f64, shift: bool, ctrl: bool },
     /// Se escribió otro tiempo para una memoria (`from` = el anterior, `to` = el nuevo, sin validar contra el archivo).
     SetTime { cue_id: u64, from: f64, to: f64 },
     /// Nombre nuevo para la memoria `index` de la cue (puede quedar vacío: «sin nombre»).
@@ -240,7 +240,7 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
                         }
                     }
                 } else {
-                    let hover = format!("{name}\nIr a este punto (en caliente si la cue suena; si no, queda lista para Espacio)");
+                    let hover = format!("{name}\nIr a este punto (en caliente si la cue suena; si no, queda lista para Espacio)\nCtrl+clic en dos memorias de la misma cue: bucle de ensayo entre ellas (Esc lo termina)");
                     let clicked = ui
                         .scope(|ui| {
                             ui.set_max_width(name_w);
@@ -248,7 +248,8 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
                         })
                         .inner;
                     if clicked {
-                        event = Some(PanelEvent::Activate { cue_id: r.cue_id, secs: r.secs, shift: ui.input(|i| i.modifiers.shift) });
+                        let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command || i.modifiers.ctrl));
+                        event = Some(PanelEvent::Activate { cue_id: r.cue_id, secs: r.secs, shift, ctrl });
                     }
                 }
                 let pfl_on = pfl.is_some_and(|(id, s)| id == r.cue_id && (s - r.secs).abs() < 1e-6);

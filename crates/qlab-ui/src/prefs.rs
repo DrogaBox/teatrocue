@@ -28,10 +28,14 @@ pub enum Command {
     SaveAs,
     Quit,
     Help,
+    /// Velocidad de ensayo de la cue abierta: -1 %, +1 % y vuelta a 1,00×.
+    SpeedDown,
+    SpeedUp,
+    SpeedReset,
 }
 
 impl Command {
-    pub const ALL: [Command; 18] = [
+    pub const ALL: [Command; 21] = [
         Command::Go,
         Command::Panic,
         Command::Pause,
@@ -50,6 +54,9 @@ impl Command {
         Command::SaveAs,
         Command::Quit,
         Command::Help,
+        Command::SpeedDown,
+        Command::SpeedUp,
+        Command::SpeedReset,
     ];
 
     pub fn label(self) -> &'static str {
@@ -72,6 +79,9 @@ impl Command {
             Command::SaveAs => "Guardar como",
             Command::Quit => "Salir",
             Command::Help => "Manual de uso",
+            Command::SpeedDown => "Velocidad de ensayo: -1 %",
+            Command::SpeedUp => "Velocidad de ensayo: +1 %",
+            Command::SpeedReset => "Velocidad de ensayo: 1,00×",
         }
     }
 
@@ -99,6 +109,9 @@ impl Command {
             Command::SaveAs => [cs(Key::S), None],
             Command::Quit => [c(Key::Q), None],
             Command::Help => [k(Key::F1), None],
+            Command::SpeedDown => [k(Key::Minus), None],
+            Command::SpeedUp => [k(Key::Plus), k(Key::Equals)],
+            Command::SpeedReset => [c(Key::Equals), None],
         }
     }
 

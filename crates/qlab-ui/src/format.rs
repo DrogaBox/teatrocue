@@ -92,6 +92,36 @@ pub fn fader_to_db(pos: f32) -> f32 {
 }
 
 /// Recorta un texto largo con puntos suspensivos (por caracteres, no por bytes).
+/// Hora local «HH:MM:SS» para el reloj de la cabina.
+pub fn local_hms() -> String {
+    let (h, m, s) = local_hms_parts();
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+#[cfg(windows)]
+fn local_hms_parts() -> (u32, u32, u32) {
+    // SAFETY: llamada sin punteros; devuelve la hora local del sistema.
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (u32::from(t.wHour), u32::from(t.wMinute), u32::from(t.wSecond))
+}
+
+#[cfg(unix)]
+fn local_hms_parts() -> (u32, u32, u32) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `now` y `tm` son locales válidos durante la llamada.
+    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+        return (0, 0, 0);
+    }
+    (tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn local_hms_parts() -> (u32, u32, u32) {
+    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    (((s / 3600) % 24) as u32, ((s / 60) % 60) as u32, (s % 60) as u32)
+}
+
 pub fn ellipsize(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();

@@ -41,6 +41,9 @@ const TOAST_LIFETIME: Duration = Duration::from_secs(6);
 const MAX_TOASTS: usize = 5;
 /// Dos pulsaciones de Panic dentro de este margen son una parada dura.
 const DOUBLE_PANIC: Duration = Duration::from_millis(700);
+/// Rango de la velocidad de ensayo con las teclas - y + (por ciento).
+const REHEARSAL_SPEED_MIN_PCT: i32 = 50;
+const REHEARSAL_SPEED_MAX_PCT: i32 = 200;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -86,6 +89,13 @@ pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
     born: Instant,
+}
+
+/// Bucle de ensayo entre dos memorias: la cue repite `[a, b)` hasta que se para. Es de ensayo: no se guarda.
+struct RehearsalLoop {
+    id: u64,
+    /// Tiempos y bucles de la cue antes del bucle (lo que tiene el daemon).
+    original: qlab_protocol::cue_dto::AudioTimeAndLoopsData,
 }
 
 /// Revinculación de archivos faltantes en curso.
@@ -267,6 +277,16 @@ pub struct QlabApp {
     reported_missing: Vec<u64>,
     /// Revinculación en curso (Archivo → Buscar archivos faltantes…).
     relink: Option<Relink>,
+    /// Primer borde elegido del bucle de ensayo (Ctrl+clic en una memoria): cue y segundos.
+    loop_pick: Option<(u64, f64)>,
+    /// Bucle de ensayo armado: la cue y sus tiempos/bucles originales, que vuelven al terminar.
+    rehearsal_loop: Option<RehearsalLoop>,
+    /// Bucle pedido para una cue cuyo detalle todavía no está en el Inspector.
+    pending_loop: Option<(u64, f64, f64)>,
+    /// Al terminar un bucle con la cue abierta en otra cue: lo original vuelve cuando su detalle cargue.
+    pending_loop_restore: Option<(u64, qlab_protocol::cue_dto::AudioTimeAndLoopsData)>,
+    /// El guardado del borrador de esta cue espera a que deje de sonar (sus bucles no se cambian en caliente).
+    hold_commit: Option<u64>,
     resume_points: HashMap<u64, ResumePoint>,
     /// Cues armadas desde una memoria: sirve para un solo GO; al terminar o pararse, la cue vuelve a su arranque de antes.
     memory_arms: HashMap<u64, ResumePoint>,
@@ -390,6 +410,11 @@ impl QlabApp {
             last_go: None,
             reported_missing: Vec::new(),
             relink: None,
+            loop_pick: None,
+            rehearsal_loop: None,
+            pending_loop: None,
+            pending_loop_restore: None,
+            hold_commit: None,
             resume_points: HashMap::new(),
             memory_arms: HashMap::new(),
             news_waiting: cfg.settings_path.as_deref().map(crate::novedades::seen_path).is_some_and(|p| crate::novedades::should_show(&p)),
@@ -640,7 +665,8 @@ impl QlabApp {
                         self.show_dirty = true;
                         if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) {
                             if let Some((rid, secs)) = self.restart_after_save {
-                                if rid == id && sent.body.audio().is_some_and(|a| a.time_loops.start_override_secs == Some(secs)) {
+                                // Relanzar desde `secs`: el arranque aparte de una memoria, o el inicio de la región de un bucle de ensayo.
+                                if rid == id && sent.body.audio().is_some_and(|a| a.time_loops.start_override_secs == Some(secs) || (a.time_loops.start_override_secs.is_none() && (a.time_loops.start_time_sec - secs).abs() < 1e-9)) {
                                     self.restart_after_save = None;
                                     self.restart_due = Some((Instant::now() + Duration::from_millis(150), id));
                                 }
@@ -1000,6 +1026,7 @@ impl QlabApp {
 
     pub fn panic_press(&mut self) {
         self.note_stop_for_resume();
+        self.end_rehearsal_loop();
         let hard = self.panic_at.is_some_and(|t| t.elapsed() < DOUBLE_PANIC);
         self.panic_at = Some(Instant::now());
         self.link.fire(if hard { ClientRequest::HardStopAll } else { ClientRequest::Panic });
@@ -1020,6 +1047,7 @@ impl QlabApp {
         self.locked = !self.locked;
         self.quick_memory = None;
         if self.locked {
+            self.end_rehearsal_loop();
             // Entrar en función: los puntos de ensayo se quitan y cada cue vuelve a su arranque.
             self.pending_resume = None;
             self.restore_resume_points();
@@ -1059,6 +1087,7 @@ impl QlabApp {
             }
             Action::StopAll => {
                 self.note_stop_for_resume();
+                self.end_rehearsal_loop();
                 self.link.fire(ClientRequest::StopAll);
             }
             Action::PauseAll => self.link.fire(ClientRequest::PauseAll),
@@ -1326,6 +1355,22 @@ impl QlabApp {
     }
 
     fn save_to(&mut self, path: std::path::PathBuf) {
+        // Un bucle de ensayo no va al show: si la cue suena no se puede quitar todavía; si no, se quita y se guarda ya.
+        if let Some(l) = &self.rehearsal_loop {
+            if self.sounding(l.id) {
+                self.toast(ToastKind::Warn, "Hay un bucle de ensayo sonando: párelo (Esc) antes de guardar el show");
+                return;
+            }
+            self.end_rehearsal_loop();
+            if let Some(d) = &self.inspector.draft {
+                if d.dirty() {
+                    let (id, node) = (d.id(), d.node.clone());
+                    self.inspector.in_flight = Some(node.clone());
+                    let tag = self.new_tag(Pending::Update(id, node.clone()));
+                    self.link.request(tag, ClientRequest::UpdateCue { node: Box::new(node) });
+                }
+            }
+        }
         // Un guardado pendiente de edición: primero se confirma lo que haya en el Inspector.
         let name = show_name_of(&path);
         // Los puntos de «retomar» del ensayo no se guardan en el show: se quitan para guardar y se vuelven a poner.
@@ -1344,6 +1389,102 @@ impl QlabApp {
         for &(id, _, start) in &rehearsal {
             self.send_start_point(id, Some(start));
         }
+    }
+
+    // -- Bucle de ensayo entre dos memorias -------------------------------------------------------
+
+    /// Ctrl+clic en una memoria: el primero elige dónde empieza el bucle, el segundo (misma cue) dónde termina.
+    pub fn loop_pick(&mut self, cue_id: u64, secs: f64) {
+        if self.lock_refuses() {
+            return;
+        }
+        match self.loop_pick.take() {
+            Some((id, a)) if id == cue_id && (a - secs).abs() > 1e-6 => {
+                let (a, b) = if a < secs { (a, secs) } else { (secs, a) };
+                self.begin_rehearsal_loop(cue_id, a, b);
+            }
+            _ => {
+                self.loop_pick = Some((cue_id, secs));
+                self.hud(format!("Bucle de ensayo desde {}: Ctrl+clic en la memoria donde termina", crate::format::fmt_time(secs)));
+                self.select(cue_id);
+            }
+        }
+    }
+
+    fn begin_rehearsal_loop(&mut self, id: u64, a: f64, b: f64) {
+        if self.rehearsal_loop.as_ref().is_some_and(|l| l.id != id) {
+            self.end_rehearsal_loop();
+        }
+        if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+            self.apply_rehearsal_loop(id, a, b);
+        } else {
+            self.pending_loop = Some((id, a, b));
+            self.select(id);
+        }
+    }
+
+    /// Arma el bucle en el borrador: la región pasa a ser `[a, b)` con bucle infinito (sin slices ni arranque aparte).
+    /// Si la cue suena, se corta y se relanza desde `a` en cuanto el daemon confirme el cambio.
+    fn apply_rehearsal_loop(&mut self, id: u64, a: f64, b: f64) {
+        let sounding = self.sounding(id);
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) else { return };
+        let Some(original) = crate::views::inspector::time_loops_ref(&d.baseline).cloned() else { return };
+        let Some(t) = crate::views::inspector::time_loops_mut(&mut d.node) else { return };
+        let sr = f64::from(t.file_sample_rate.max(1));
+        let (fa, fb) = ((a * sr).round() as u64, (b * sr).round() as u64);
+        if fb <= fa + 1 {
+            self.hud("Bucle de ensayo: las dos memorias tienen que estar separadas");
+            return;
+        }
+        // El original que se repone es el de antes del primer bucle (encadenar bucles no lo pisa).
+        let original = self.rehearsal_loop.take().filter(|l| l.id == id).map_or(original, |l| l.original);
+        t.start_time_sec = a;
+        t.end_time_sec = b;
+        t.infinite_loop = true;
+        t.slices.clear();
+        t.start_override_secs = None;
+        self.rehearsal_loop = Some(RehearsalLoop { id, original });
+        if sounding {
+            self.link.fire(ClientRequest::CutCue { cue_id: id });
+            self.restart_after_save = Some((id, a));
+        }
+        self.hud(format!("Repitiendo {} a {}: Esc termina el bucle{}", crate::format::fmt_time(a), crate::format::fmt_time(b), if sounding { "" } else { " · Espacio arranca" }));
+    }
+
+    /// Termina el bucle de ensayo: la cue vuelve a sus tiempos y bucles de antes. Si está sonando, el cambio se
+    /// guarda en cuanto se pare (los bucles no se cambian en caliente).
+    fn end_rehearsal_loop(&mut self) {
+        self.loop_pick = None;
+        self.pending_loop = None;
+        let Some(l) = self.rehearsal_loop.take() else { return };
+        if self.inspector.draft.as_ref().is_some_and(|d| d.id() == l.id) {
+            self.restore_rehearsal_loop(l.id, l.original);
+        } else {
+            self.pending_loop_restore = Some((l.id, l.original));
+            self.select(l.id);
+        }
+    }
+
+    fn restore_rehearsal_loop(&mut self, id: u64, original: qlab_protocol::cue_dto::AudioTimeAndLoopsData) {
+        let sounding = self.sounding(id);
+        let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) else { return };
+        if let Some(t) = crate::views::inspector::time_loops_mut(&mut d.node) {
+            // Las memorias que se hayan marcado mientras tanto se conservan.
+            let memories = std::mem::take(&mut t.memories);
+            *t = original;
+            if !memories.is_empty() {
+                t.memories = memories;
+            }
+        }
+        if sounding {
+            self.hold_commit = Some(id);
+        }
+        self.hud("Bucle de ensayo terminado: la cue vuelve a como estaba");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rehearsal_loop_for_test(&self) -> Option<u64> {
+        self.rehearsal_loop.as_ref().map(|l| l.id)
     }
 
     /// Cues de audio o vídeo cuyo archivo no está donde dice el show.
@@ -2390,6 +2531,10 @@ impl QlabApp {
     /// Ir a una memoria. Si la cue suena, se detiene y se relanza desde ese punto en cuanto se guarde el nuevo punto de
     /// arranque; si no, queda como siguiente en disparar (Espacio) y con el cursor de edición ahí.
     fn activate_memory(&mut self, ctx: &egui::Context, id: u64, marker: f64, shift: bool) {
+        if self.rehearsal_loop.as_ref().is_some_and(|l| l.id == id) {
+            // Saltar a una memoria deshace el bucle de ensayo de esa cue.
+            self.end_rehearsal_loop();
+        }
         // Pre-roll: arranca unos segundos antes del marcador (Shift+clic aplica 2 s aunque esté apagado).
         let pre = match (self.memories_panel.preroll, shift) {
             (0, true) => 2,
@@ -2674,6 +2819,24 @@ impl QlabApp {
                 self.apply_memory_goto(id, secs);
             }
         }
+        if let Some((id, a, b)) = self.pending_loop {
+            if self.model.summary(id).is_none() {
+                self.pending_loop = None;
+            } else if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                self.pending_loop = None;
+                self.apply_rehearsal_loop(id, a, b);
+            }
+        }
+        if let Some((id, _)) = &self.pending_loop_restore {
+            let id = *id;
+            if self.model.summary(id).is_none() {
+                self.pending_loop_restore = None;
+            } else if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
+                if let Some((_, original)) = self.pending_loop_restore.take() {
+                    self.restore_rehearsal_loop(id, original);
+                }
+            }
+        }
         if let Some((id, index, name)) = self.pending_memory_rename.take() {
             if self.inspector.draft.as_ref().is_some_and(|d| d.id() == id) {
                 self.apply_memory_rename(id, index, name);
@@ -2872,6 +3035,37 @@ impl QlabApp {
         if keys.redo && !self.lock_refuses() {
             self.replay_history(false);
         }
+        if keys.speed_down {
+            self.nudge_speed(-1);
+        }
+        if keys.speed_up {
+            self.nudge_speed(1);
+        }
+        if keys.speed_reset {
+            self.set_speed(1.0);
+        }
+    }
+
+    /// Velocidad de ensayo de la cue abierta en el Inspector, de a 1 % (teclas - y +). Cambia en caliente.
+    pub fn nudge_speed(&mut self, delta_pct: i32) {
+        let Some(rate) = self.inspector.draft.as_ref().and_then(|d| crate::views::inspector::time_loops_ref(&d.node)).map(|t| t.rate) else {
+            self.hud("Velocidad: abra una cue de audio en el Inspector");
+            return;
+        };
+        let pct = (f64::from(rate) * 100.0).round() as i32 + delta_pct;
+        self.set_speed(pct.clamp(REHEARSAL_SPEED_MIN_PCT, REHEARSAL_SPEED_MAX_PCT) as f32 / 100.0);
+    }
+
+    pub fn set_speed(&mut self, rate: f32) {
+        if self.lock_refuses() {
+            return;
+        }
+        let Some(t) = self.inspector.draft.as_mut().and_then(|d| crate::views::inspector::time_loops_mut(&mut d.node)) else {
+            self.hud("Velocidad: abra una cue de audio en el Inspector");
+            return;
+        };
+        t.rate = rate;
+        self.hud(format!("Velocidad {rate:.2}×{}", if (rate - 1.0).abs() < 1e-6 { " (normal)" } else { "" }));
     }
 
     fn after_key_selection(&mut self, id: u64) {
@@ -2912,6 +3106,13 @@ impl QlabApp {
         // (fundido de la parada) y el salto se perdería; el guardado espera a que la cue se haya detenido.
         if self.restart_after_save.is_some_and(|(rid, _)| rid == d.id()) && self.telemetry.running.get(&d.id()).is_some_and(|i| i.phase.is_some()) {
             return;
+        }
+        // Fin de un bucle de ensayo con la cue sonando: sus bucles vuelven cuando se pare.
+        if self.hold_commit.is_some_and(|id| id == d.id()) {
+            if self.telemetry.running.get(&d.id()).is_some_and(|i| i.phase.is_some()) {
+                return;
+            }
+            self.hold_commit = None;
         }
         let (id, node) = (d.id(), d.node.clone());
         self.inspector.in_flight = Some(node.clone());
@@ -3234,9 +3435,13 @@ impl QlabApp {
         match memory_event {
             Some(views::memories::PanelEvent::Close) => self.memories_open = false,
             Some(views::memories::PanelEvent::Pfl { cue_id, secs }) => self.toggle_pfl(cue_id, Some(secs)),
-            Some(views::memories::PanelEvent::Activate { cue_id, secs, shift }) => {
+            Some(views::memories::PanelEvent::Activate { cue_id, secs, shift, ctrl }) => {
                 let ctx = ui.ctx().clone();
-                self.activate_memory(&ctx, cue_id, secs, shift);
+                if ctrl {
+                    self.loop_pick(cue_id, secs);
+                } else {
+                    self.activate_memory(&ctx, cue_id, secs, shift);
+                }
             }
             Some(views::memories::PanelEvent::Preroll(v)) => self.set_preroll(v),
             Some(views::memories::PanelEvent::SetTime { cue_id, from, to }) => self.set_memory_time(cue_id, from, to),
@@ -3395,6 +3600,10 @@ pub struct Keys {
     pub lock: bool,
     /// P: pausar / reanudar.
     pub pause: bool,
+    /// Velocidad de ensayo: -1 %, +1 %, 1,00×.
+    pub speed_down: bool,
+    pub speed_up: bool,
+    pub speed_reset: bool,
 }
 
 /// Atajos de una pasada de entrada con las teclas de fábrica.
@@ -3428,6 +3637,9 @@ pub fn scan_keys_with(i: &egui::InputState, map: &crate::prefs::Keymap) -> Keys 
             k.lock |= on(C::Lock);
             k.pause |= on(C::Pause);
             k.delete |= on(C::Delete);
+            k.speed_down |= on(C::SpeedDown);
+            k.speed_up |= on(C::SpeedUp);
+            k.speed_reset |= on(C::SpeedReset);
             // Marcar memoria: la primera tecla avisa si no hay nada que marcar; la segunda (Enter de fábrica) no.
             let [first, second] = map.get(C::Memory);
             if !r {
