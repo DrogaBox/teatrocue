@@ -210,6 +210,11 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
             let mut editing: Option<String> = ui.data(|d| d.get_temp(rename_id));
             // El campo de tiempo abierto también suspende el arrastre de su fila (el editor lo usa para seleccionar texto).
             let time_editing = ui.data(|d| d.get_temp::<String>(egui::Id::NULL.with(("memory_time", r.cue_id, r.number)))).is_some();
+            // La capa de arrastre se registra ANTES que los botones (con el rectángulo de la fila del cuadro anterior)
+            // para quedar debajo: en egui, una capa que solo arrastra encima de un botón se queda con sus clics.
+            let drag_id = egui::Id::NULL.with(("memory_row_drag", r.cue_id, r.index));
+            let sense = if editing.is_some() || time_editing { egui::Sense::hover() } else { egui::Sense::drag() };
+            let drag = ui.data(|d| d.get_temp::<egui::Rect>(drag_id.with("rect"))).map(|rect| ui.interact(rect, drag_id, sense));
             let inner = ui.horizontal(|ui| {
                 if let Some(to) = time_field(ui, egui::Id::NULL.with(("memory_time", r.cue_id, r.number)), r.secs, f64::INFINITY, 48_000) {
                     event = Some(PanelEvent::SetTime { cue_id: r.cue_id, from: r.secs, to });
@@ -261,25 +266,30 @@ pub fn show_panel(ui: &mut Ui, st: &mut PanelState, rows: &[Row], total: usize, 
                 crate::widgets::marquee(ui, &r.cue, egui::TextStyle::Small.resolve(ui.style()), theme::TEXT_DIM, w, false);
             });
             row_rects.push((inner.response.rect, ri));
-            let sense = if editing.is_some() || time_editing { egui::Sense::hover() } else { egui::Sense::drag() };
+            ui.data_mut(|d| d.insert_temp(drag_id.with("rect"), inner.response.rect));
             // Sin texto al pasar el ratón: la capa cubre la fila entera y taparía los avisos de los botones.
-            let drag = ui.interact(inner.response.rect, egui::Id::NULL.with(("memory_row_drag", r.cue_id, r.index)), sense);
-            if drag.drag_started() {
-                drag_state = Some(RowDrag { src: ri, cue_id: r.cue_id, from: r.index, to: None, guide_y: None });
+            // Primer cuadro de la fila: todavía no hay rectángulo para la capa; se registra en el siguiente.
+            if drag.is_none() {
+                ui.ctx().request_repaint();
             }
-            if drag.drag_stopped() {
-                if let Some(st) = drag_state.take() {
-                    if st.src == ri {
-                        if let Some(to) = st.to {
-                            if to != st.from {
-                                event = Some(PanelEvent::Reorder { cue_id: st.cue_id, from: st.from, to });
+            if let Some(drag) = drag {
+                if drag.drag_started() {
+                    drag_state = Some(RowDrag { src: ri, cue_id: r.cue_id, from: r.index, to: None, guide_y: None });
+                }
+                if drag.drag_stopped() {
+                    if let Some(st) = drag_state.take() {
+                        if st.src == ri {
+                            if let Some(to) = st.to {
+                                if to != st.from {
+                                    event = Some(PanelEvent::Reorder { cue_id: st.cue_id, from: st.from, to });
+                                }
                             }
                         }
                     }
                 }
-            }
-            if drag.dragged() && drag_state.as_ref().is_some_and(|s| s.src == ri) {
-                src_drag = Some((ri, drag));
+                if drag.dragged() && drag_state.as_ref().is_some_and(|s| s.src == ri) {
+                    src_drag = Some((ri, drag));
+                }
             }
             if !r.note.is_empty() {
                 ui.label(RichText::new(&r.note).small().color(theme::TEXT_DIM));

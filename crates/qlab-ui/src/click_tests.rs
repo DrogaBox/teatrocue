@@ -1445,9 +1445,9 @@ fn two_quick_memory_clicks_keep_only_the_last_arm() {
     app_mut(&mut f.h).memories_open = true;
     f.h.step();
     f.h.step();
-    f.h.get_all_by_label_contains("una").next().unwrap().click();
+    f.h.get_all_by_label_contains("#1  una").next().unwrap().click();
     f.h.step();
-    f.h.get_all_by_label_contains("dos").next().unwrap().click();
+    f.h.get_all_by_label_contains("#2  dos").next().unwrap().click();
     // Un solo pedido pendiente: el último clic es el que manda (mismo criterio que el temporal que había).
     pump(&mut f.h, "queda el armado de la segunda", |a| start_override(a) == Some(1.0));
 }
@@ -1494,6 +1494,7 @@ fn deleting_the_cue_of_a_pending_memory_goto_drops_it() {
     f.h.step();
     f.h.step();
     f.h.get_all_by_label_contains("borrable").next().unwrap().click();
+    f.h.step();
     // Se borra la cue del salto sin esperar al detalle: el pedido no puede quedarse colgado ni aplicarse a otra cue.
     app_mut(&mut f.h).apply_for_test(crate::views::Action::DeleteSelected);
     pump(&mut f.h, "cue borrada y sin pedido pendiente colgado", |a| {
@@ -1509,6 +1510,8 @@ fn undo_and_redo_restore_memory_edits() {
         d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs: 0.5, name: "viejo".into(), note: String::new() }];
     }
     pump(&mut f.h, "memoria guardada", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 1) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+    // Dos ediciones de la misma cue más juntas que `COALESCE` son un solo paso de Deshacer.
+    std::thread::sleep(crate::history::COALESCE);
     {
         let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
         d.node.body.audio_mut().unwrap().time_loops.memories[0].name = "nuevo".into();
@@ -2151,6 +2154,8 @@ fn the_memories_panel_deletes_a_memory_the_list_renumbers_and_undo_restores_it()
         f.h.step();
     }
     assert!(f.h.query_all_by_label_contains("#1  uno").next().is_some() && f.h.query_all_by_label_contains("#2  dos").next().is_some());
+    // La quita es otro paso de Deshacer, no parte del alta de las memorias.
+    std::thread::sleep(crate::history::COALESCE);
     f.h.get_all_by_label("Quitar").next().unwrap().click();
     pump(&mut f.h, "«uno» quitada", |a| a.model.summary(1).is_some_and(|c| c.memories.len() == 1 && c.memories[0].name == "dos"));
     f.h.step();
