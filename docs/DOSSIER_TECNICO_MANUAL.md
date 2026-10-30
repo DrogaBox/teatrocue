@@ -255,6 +255,10 @@ En el teclado numérico: **`.`** inicia la secuencia (aviso «Memoria #…»), l
 
 Selector **Off / 2s / 4s** en el panel de memorias y en Time & Loops. Al saltar a una memoria arranca `N` segundos **antes** del marcador, nunca antes del inicio del archivo (`max(0, marca − N)`). Aparece el aviso «Pre-roll: -Xs -> Memoria [nombre]». **Mayús + clic** en una fila aplica 2 s aunque esté en Off. El valor se guarda en `audio.json` (`preroll_secs`) y persiste entre sesiones.
 
+### 3.1b Fundidos de la cue y fundidos globales
+
+`AudioTimeAndLoopsData.fade_in_secs` y `fade_out_secs` (0 a 60 s, `serde(default)`: los shows anteriores abren igual). Al arrancar, el núcleo manda `PlayFadeIn` con el mayor entre el fundido de entrada de la cue y el micro-fade de 50 ms de un arranque desde memoria; sin ninguno, `Play`. Al parar (`stop_cue`, `stop_all`, Stop de control) el fundido pedido se estira hasta `fade_out_secs` de la cue; la parada dura (`cut_all`, Esc Esc) corta con sus 2 ms exactos. Los fundidos globales (`SchedulerConfig.stop_fade_frames` para «Parar todo» y Stop de control, `panic_fade_frames` para Esc) ya no son fijos: la interfaz los manda al conectar y al cambiarlos con `ClientRequest::SetStopFades { stop_secs, panic_secs }` (0 a 30 s, mínimo 5 ms para no hacer clic), desde Preferencias → Fundidos al parar (`preferencias.json`: `stop_fade_secs`, `panic_fade_secs`, 1 s de fábrica cada uno). La columna Acción muestra `/entrada \salida`.
+
 ### 3.2 Slices y Vamping
 
 Concepto: los **slices** son marcadores de corte dentro de la región de una cue de audio/vídeo; cada marcador abre un tramo hasta el siguiente y define cuántas veces se repite (`AudioSliceMarker { frame, play_count, label }`).

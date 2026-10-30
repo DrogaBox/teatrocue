@@ -787,6 +787,17 @@ impl CueList {
     /// Detiene una cue. El audio en marcha hace tail-out de `fade_frames` y la cue no termina
     /// hasta que el motor confirma el fin de la voz; el resto termina al instante.
     pub fn stop_cue(&mut self, id: CueId, now: Frames, fade_frames: u32, out: &mut Vec<Effect>) {
+        self.stop_cue_inner(id, now, fade_frames, true, out);
+    }
+
+    /// Fundido de salida propio de la cue (`fade_out_secs`), en frames; 0 si no tiene.
+    fn cue_fade_out_frames(&self, id: CueId) -> u32 {
+        let secs = self.cues.get(&id).and_then(|c| c.audio_data()).map_or(0.0, |a| a.time_loops.fade_out_secs);
+        if secs.is_finite() && secs > 0.0 { (secs.min(qlab_protocol::cue_dto::MAX_CUE_FADE_SECS) as f64 * f64::from(self.timebase.sample_rate())).round() as u32 } else { 0 }
+    }
+
+    /// `honor_cue_fade`: la parada normal estira el fundido hasta el de la cue; la parada dura (Esc Esc) no.
+    fn stop_cue_inner(&mut self, id: CueId, now: Frames, fade_frames: u32, honor_cue_fade: bool, out: &mut Vec<Effect>) {
         let Some(cue) = self.cues.get(&id) else { return };
         let state = cue.state();
         if !state.is_active() {
@@ -796,6 +807,7 @@ impl CueList {
         match &cue.kind {
             CueKind::Audio(_) | CueKind::Video(_) => {
                 if voice_started && !cue.machine.is_action_done() {
+                    let fade_frames = if honor_cue_fade { fade_frames.max(self.cue_fade_out_frames(id)) } else { fade_frames };
                     out.push(Effect::StopVoice { cue: id, fade_frames });
                     if state == CueState::Paused {
                         // Una voz en pausa ya está en silencio: no habrá confirmación que esperar.
@@ -814,7 +826,7 @@ impl CueList {
             CueKind::Control(_) | CueKind::Osc(_) | CueKind::Memo => self.hard_stop(id, now, out),
             CueKind::Group(_) => {
                 for child in cue.group_running.clone() {
-                    self.stop_cue(child, now, fade_frames, out);
+                    self.stop_cue_inner(child, now, fade_frames, honor_cue_fade, out);
                 }
                 self.hard_stop(id, now, out);
             }
@@ -839,10 +851,22 @@ impl CueList {
         }
     }
 
-    /// Panic / Stop All: detiene todo lo que esté en marcha.
+    /// Panic / Stop All: detiene todo lo que esté en marcha; cada cue de audio puede alargar el fundido con el suyo.
     pub fn stop_all(&mut self, now: Frames, fade_frames: u32, out: &mut Vec<Effect>) {
         for id in self.active_top_level() {
             self.stop_cue(id, now, fade_frames, out);
+        }
+    }
+
+    /// Corte rápido de una cue (salto a memoria con la cue sonando): `fade_frames` exactos, sin el fundido de la cue.
+    pub fn cut_cue(&mut self, id: CueId, now: Frames, fade_frames: u32, out: &mut Vec<Effect>) {
+        self.stop_cue_inner(id, now, fade_frames, false, out);
+    }
+
+    /// Parada dura (Esc Esc): corta todo con `fade_frames` exactos, sin respetar los fundidos de las cues.
+    pub fn cut_all(&mut self, now: Frames, fade_frames: u32, out: &mut Vec<Effect>) {
+        for id in self.active_top_level() {
+            self.stop_cue_inner(id, now, fade_frames, false, out);
         }
     }
 

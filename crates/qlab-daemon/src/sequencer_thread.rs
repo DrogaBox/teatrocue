@@ -43,6 +43,10 @@ pub enum SeqCommand {
     Audio(qlab_engine::rt_command::AudioCommand),
     Control(Control),
     SetPlayhead(Option<CueId>),
+    /// Fundidos globales de «Parar todo» y de Panic (frames).
+    SetStopFades { stop_frames: u32, panic_frames: u32 },
+    /// Corte rápido de una cue (salto a memoria con la cue sonando).
+    CutCue(CueId),
     Devamp(CueId),
     /// Acción de control sobre una cue (control remoto).
     CueAction(CueId, qlab_core::cue::ControlAction),
@@ -169,6 +173,8 @@ impl SequencerCore {
             SeqCommand::Control(Control::PauseAll) => self.scheduler.pause_all(now),
             SeqCommand::Control(Control::ResumeAll) => self.scheduler.resume_all(now),
             SeqCommand::Control(Control::HardStopAll) => self.scheduler.hard_stop_all(now),
+            SeqCommand::SetStopFades { stop_frames, panic_frames } => self.scheduler.set_stop_fades(stop_frames, panic_frames),
+            SeqCommand::CutCue(id) => self.scheduler.cut_cue(id, now),
             SeqCommand::AddCue { cue, parent, after, reply } => {
                 let r = self.scheduler.list_mut().insert_cue(*cue, parent, after).map(|_| ()).map_err(|e| e.to_string());
                 if r.is_ok() {
@@ -397,6 +403,8 @@ pub fn cue_summaries(list: &CueList) -> Vec<CueSummary> {
             start_override_secs: cue.audio_data().and_then(|a| a.time_loops.start_override_secs),
             notes: cue.basics.notes.clone(),
             file_path: cue.basics.file_target.as_ref().map(|t| t.absolute_path.clone()).unwrap_or_default(),
+            fade_in_secs: cue.audio_data().map_or(0.0, |a| a.time_loops.fade_in_secs),
+            fade_out_secs: cue.audio_data().map_or(0.0, |a| a.time_loops.fade_out_secs),
         });
         if let CueKind::Group(g) = &cue.kind {
             for &child in &g.children {

@@ -1,6 +1,89 @@
 ﻿TeatroCue - CAMBIOS
 ===================
 
+Versión del 30/10/2026, comparada con la del 21/10/2026.
+Los shows guardados se abren igual que antes; no hace falta cambiar nada en ellos.
+
+
+NUEVO
+-----
+
+1. Saltar a una memoria sirve para un solo GO
+   Al elegir una memoria, la cue queda lista para arrancar desde ese punto. Cuando esa cue
+   termina o se para, vuelve a su arranque de siempre: la próxima vez que se llegue a ella
+   (por ejemplo, al pasar de largo hacia el tema siguiente y volver) suena desde el principio.
+   Si mientras tanto se puso a mano otro punto de arranque, se respeta.
+
+2. Fundidos para ballet
+   Cada cue de audio tiene, en Time & Loops > "Fundidos de la cue", un fundido de Entrada
+   (al arrancar) y uno de Salida al parar (con Esc, "Parar todo" o una cue Stop). Para una
+   variación: entrada 0,3 s y salida de 2 a 3 s. Se guardan con el show y la columna Acción
+   los muestra como /0.3 \2.5.
+   Esc y "Parar todo" ya no cortan fijo: funden en 1 s de fábrica y el tiempo se cambia en
+   Opciones > Preferencias > "Fundidos al parar" (0 = corte seco sin clic). Al parar manda el
+   mayor entre el fundido de la cue y el global. Esc Esc sigue siendo la parada dura.
+
+3. Traba de doble GO
+   Dos Espacios muy seguidos (nervios, un pedal que rebota) disparaban dos cues. Ahora el
+   segundo se ignora si llega dentro de 0,4 s y aparece "GO repetido: ignorado". El tiempo
+   se cambia en Opciones > Preferencias > Función (0 = sin traba).
+
+4. Notas de la cue en STANDBY
+   Las notas de la cue en espera se leen grandes en el recuadro STANDBY, debajo del nombre
+   ("Esperar el saludo", "GO en el 3er acorde"), hasta 3 renglones.
+
+5. Archivos que no se encuentran
+   Al abrir un show cuyos audios cambiaron de lugar (otra PC, otro pendrive) aparece un solo
+   aviso con los que faltan, y Archivo > Buscar archivos faltantes... pide la carpeta donde
+   están ahora. Se buscan por nombre, también en las subcarpetas, y las cues quedan armadas
+   con la ruta nueva. Después, guardar el show.
+
+6. Instalador con menú
+   Al abrir Instalar_TeatroCue.exe con doble clic aparece un menú: instalar o actualizar,
+   solo la licencia, reparar la licencia (si dice "Licencia no válida", esta es la opción),
+   restablecer la fecha, sin acceso directo, en otra carpeta. Después pide la contraseña
+   maestra y la duración, como siempre. Las opciones escritas siguen funcionando.
+   La opción 7, Administrador (contraseña maestra), es para el administrador: estado de la
+   PC, equipos licenciados, clave de emergencia REQ a RESP con el texto para WhatsApp,
+   cambiar el puesto, verificar el pendrive, quitar la licencia, desinstalar, respaldo del
+   registro y abrir teatrocue-admin. Todo por menú, sin escribir opciones.
+
+
+CORREGIDO
+---------
+
+7. El panel de Memorias responde a los clics
+   Hacer clic en una memoria, en PFL, en Renombrar o en Quitar dentro del panel no hacía
+   nada. Ahora responden. Arrastrar una fila para cambiar el orden sigue funcionando.
+
+8. Elegir una memoria con la cue sonando
+   A veces la cue se paraba y no volvía a arrancar desde la memoria (aparecía "No se guardó:
+   detén la cue antes de cambiar su archivo..."). Ahora corta rápido y relanza desde la
+   memoria, sin esperar el fundido de parada.
+
+9. Bloqueo de función y teclado
+   Con el Bloqueo (Ctrl+L) activo, Espacio, Esc y P llegan aunque un campo de texto tenga
+   el foco (por ejemplo la búsqueda de memorias): el campo lo suelta y la tecla no se
+   escribe en él. Al activar el bloqueo se suelta el foco de cualquier campo.
+
+10. Avisos repetidos al abrir un show
+   Cada archivo que faltaba producía dos avisos iguales. Ahora, uno solo con la lista.
+
+
+AGRADECIMIENTOS
+---------------
+
+A Tata y a Andrés, sonidistas del teatro, por probar TeatroCue en ensayos y funciones de
+verdad, con el teatro lleno y sin red, y por avisar de cada cosa rara con lujo de detalles.
+Buena parte de lo que hay arriba salió de sus reclamos.
+Nota para Tata: los alfajores prometidos siguen pendientes. La deuda queda asentada acá, en
+el changelog, que no se borra.
+
+
+======================================================================================
+
+VERSIÓN ANTERIOR
+
 Versión del 21/10/2026, comparada con la que se instaló el 20/10/2026.
 Para actualizar, siga LEEME-ACTUALIZAR.txt. Los shows guardados se abren igual que antes;
 no hace falta cambiar nada en ellos.

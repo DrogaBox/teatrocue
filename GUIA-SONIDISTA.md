@@ -6,7 +6,7 @@ Todo esto también está en el manual del programa (tecla **F1**).
 | Qué | Cómo |
 |---|---|
 | Disparar la cue en espera | **Espacio** o el botón GO |
-| Parar todo (suave / duro) | **Esc** / **Esc Esc** (dos veces seguidas) |
+| Parar todo (suave / duro) | **Esc** / **Esc Esc** (dos veces seguidas). Esc y «Parar todo» funden en 1 s de fábrica (Opciones > Preferencias > Fundidos al parar); Esc Esc corta seco |
 | Volumen de toda la sala | Deslizador **MASTER** (barra superior). Doble clic = 0 dB |
 | Pausar / reanudar todo | Botones «Pausar todo» / «Reanudar todo» |
 | Mover el playhead sin disparar | Flechas ↑ ↓ |
@@ -23,6 +23,9 @@ Todo esto también está en el manual del programa (tecla **F1**).
    - cue parada: queda lista, el playhead sobre ella, y **Espacio** la dispara desde ese punto (también si la cue no estaba abierta: se selecciona y el punto queda puesto);
    - cue sonando: salta a ese punto y **sigue sonando** desde ahí.
 5. «Desde el inicio» (en la lista de memorias de la cue) quita el punto de arranque.
+
+## Fundidos por cue (ballet)
+En **Time & Loops → Fundidos de la cue**: **Entrada** (fundido al arrancar, 0 = entra seca) y **Salida al parar** (fundido al pararla con Esc, «Parar todo» o una cue Stop). Al parar manda el mayor entre el de la cue y el global de Preferencias; **Esc Esc** corta igual. Para una variación: entrada 0,3 s y salida de 2 a 3 s. La columna **Acción** los muestra como `/0.3 \2.5` (entrada, salida). Se guardan con el show.
 
 ## Ecualizador (EQ) por cue
 Pestaña **EQ** de la cue de audio: active «Ecualizador activo» y arrastre los 4 puntos de la curva (izquierda/derecha = frecuencia, arriba/abajo = ganancia). La **rueda** sobre un punto cambia la Q y el **doble clic** activa o desactiva esa banda. La tabla de abajo permite poner frecuencia, ganancia, Q y tipo de filtro con el teclado. Suena en vivo y se guarda con el show.

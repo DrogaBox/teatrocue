@@ -1990,6 +1990,33 @@ fn missing_media_is_reported_once_and_relinked_from_a_folder() {
     let _ = std::fs::remove_file(&wav);
 }
 #[test]
+fn cue_fades_are_edited_in_time_and_loops_saved_and_shown_in_the_action_column() {
+    let mut f = fixture("cuefades");
+    app_mut(&mut f.h).inspector.tab = Tab::TimeLoops;
+    f.h.step();
+    f.h.step();
+    assert!(f.h.query_by_label("Fundidos de la cue").is_some(), "la sección está en Time & Loops");
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        let t = &mut d.node.body.audio_mut().unwrap().time_loops;
+        t.fade_in_secs = 0.3;
+        t.fade_out_secs = 2.5;
+    }
+    pump(&mut f.h, "fundidos guardados", |a| a.model.summary(1).is_some_and(|c| (c.fade_in_secs - 0.3).abs() < 1e-6 && (c.fade_out_secs - 2.5).abs() < 1e-6));
+    f.h.step();
+    assert!(f.h.query_by_label("/0.3 \\2.5").is_some(), "la columna Acción los muestra");
+    assert_eq!(crate::views::cue_table::fade_label(0.0, 0.0), "");
+    assert_eq!(crate::views::cue_table::fade_label(0.0, 1.0), "\\1.0");
+    // Guardado y vuelto a abrir, los fundidos siguen en el show.
+    let out = std::env::temp_dir().join(format!("qlab-ui-cuefades-{}.json", std::process::id()));
+    app_mut(&mut f.h).save_show_as_for_test(&out);
+    pump(&mut f.h, "guardado", |_| out.is_file());
+    let saved = std::fs::read_to_string(&out).unwrap();
+    assert!(saved.contains("\"fade_out_secs\": 2.5") || saved.contains("\"fade_out_secs\":2.5"), "{saved}");
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn the_rehearsal_speed_buttons_change_the_rate_live_without_restarting_the_cue() {
     let mut f = fixture("varispeed");
     app_mut(&mut f.h).inspector.tab = Tab::TimeLoops;

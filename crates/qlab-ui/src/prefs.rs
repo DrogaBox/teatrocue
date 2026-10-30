@@ -297,6 +297,10 @@ impl Keymap {
 /// Traba de doble GO de fábrica y tope (milisegundos).
 pub const DEFAULT_DOUBLE_GO_MS: u64 = 400;
 pub const MAX_DOUBLE_GO_MS: u64 = 2_000;
+/// Fundidos globales de fábrica y tope (segundos): «Parar todo» y Panic (Esc).
+pub const DEFAULT_STOP_FADE_SECS: f32 = 1.0;
+pub const DEFAULT_PANIC_FADE_SECS: f32 = 1.0;
+pub const MAX_GLOBAL_FADE_SECS: f32 = 30.0;
 
 /// Las preferencias que se guardan.
 #[derive(Clone, Debug, PartialEq)]
@@ -307,12 +311,16 @@ pub struct Prefs {
     pub mute_system_sounds: bool,
     /// Traba de doble GO: un segundo GO dentro de estos milisegundos se ignora (0 = sin traba).
     pub double_go_ms: u64,
+    /// Fundido de «Parar todo» (y de la cue de control Stop), segundos.
+    pub stop_fade_secs: f32,
+    /// Fundido de Panic (Esc), segundos. Esc Esc sigue siendo la parada dura.
+    pub panic_fade_secs: f32,
     pub keys: Keymap,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { resume_after_stop: false, mute_system_sounds: true, double_go_ms: DEFAULT_DOUBLE_GO_MS, keys: Keymap::default() }
+        Self { resume_after_stop: false, mute_system_sounds: true, double_go_ms: DEFAULT_DOUBLE_GO_MS, stop_fade_secs: DEFAULT_STOP_FADE_SECS, panic_fade_secs: DEFAULT_PANIC_FADE_SECS, keys: Keymap::default() }
     }
 }
 
@@ -322,6 +330,8 @@ struct OnDisk {
     resume_after_stop: Option<bool>,
     mute_system_sounds: Option<bool>,
     double_go_ms: Option<u64>,
+    stop_fade_secs: Option<f32>,
+    panic_fade_secs: Option<f32>,
     /// Orden → teclas («Ctrl+L»). Lo que falta o no se entiende queda de fábrica.
     keys: BTreeMap<Command, Vec<String>>,
 }
@@ -332,6 +342,8 @@ impl Prefs {
             resume_after_stop: Some(self.resume_after_stop),
             mute_system_sounds: Some(self.mute_system_sounds),
             double_go_ms: Some(self.double_go_ms),
+            stop_fade_secs: Some(self.stop_fade_secs),
+            panic_fade_secs: Some(self.panic_fade_secs),
             keys: Command::ALL.iter().map(|&c| (c, self.keys.get(c).iter().flatten().map(|b| b.to_config()).collect())).collect(),
         }
     }
@@ -365,7 +377,15 @@ impl Prefs {
             }
             keys.map.insert(c, s);
         }
-        Self { resume_after_stop: d.resume_after_stop.unwrap_or(def.resume_after_stop), mute_system_sounds: d.mute_system_sounds.unwrap_or(def.mute_system_sounds), double_go_ms: d.double_go_ms.unwrap_or(def.double_go_ms).min(MAX_DOUBLE_GO_MS), keys }
+        Self { resume_after_stop: d.resume_after_stop.unwrap_or(def.resume_after_stop), mute_system_sounds: d.mute_system_sounds.unwrap_or(def.mute_system_sounds), double_go_ms: d.double_go_ms.unwrap_or(def.double_go_ms).min(MAX_DOUBLE_GO_MS), stop_fade_secs: fade_or(d.stop_fade_secs, def.stop_fade_secs), panic_fade_secs: fade_or(d.panic_fade_secs, def.panic_fade_secs), keys }
+    }
+}
+
+/// Un fundido leído del archivo: en rango o el de fábrica.
+fn fade_or(v: Option<f32>, default: f32) -> f32 {
+    match v {
+        Some(x) if x.is_finite() && x >= 0.0 => x.min(MAX_GLOBAL_FADE_SECS),
+        _ => default,
     }
 }
 
@@ -450,7 +470,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qlab-prefs-{}", std::process::id()));
         let p = path(&dir.join("audio.json"));
         assert_eq!(load(&p), Prefs::default(), "sin archivo: de fábrica");
-        let mut prefs = Prefs { resume_after_stop: true, mute_system_sounds: false, double_go_ms: 1_000, ..Default::default() };
+        let mut prefs = Prefs { resume_after_stop: true, mute_system_sounds: false, double_go_ms: 1_000, stop_fade_secs: 2.5, panic_fade_secs: 0.0, ..Default::default() };
         prefs.keys.assign(Command::Pause, 0, Binding { key: Key::P, ctrl: false, shift: true, alt: false }).unwrap();
         save(&p, &prefs).unwrap();
         assert_eq!(load(&p), prefs);
@@ -462,6 +482,8 @@ mod tests {
         assert_eq!(l.double_go_ms, DEFAULT_DOUBLE_GO_MS, "la traba de doble GO vuelve a la de fábrica");
         std::fs::write(&p, r#"{"double_go_ms": 99999}"#).unwrap();
         assert_eq!(load(&p).double_go_ms, MAX_DOUBLE_GO_MS, "un valor absurdo se acota");
+        std::fs::write(&p, r#"{"stop_fade_secs": -3, "panic_fade_secs": 999}"#).unwrap();
+        assert_eq!((load(&p).stop_fade_secs, load(&p).panic_fade_secs), (DEFAULT_STOP_FADE_SECS, MAX_GLOBAL_FADE_SECS), "negativo = de fábrica, enorme = tope");
         std::fs::write(&p, "esto no es json").unwrap();
         assert_eq!(load(&p), Prefs::default());
         let _ = std::fs::remove_dir_all(&dir);

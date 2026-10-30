@@ -178,9 +178,19 @@ where
         self.stop_with(now_micros, self.cfg.panic_fade_frames);
     }
 
-    /// Parada inmediata (Hard Stop, doble pulsación de Panic).
+    /// Parada inmediata (Hard Stop, doble pulsación de Panic): no respeta los fundidos de salida de las cues.
     pub fn hard_stop_all(&mut self, now_micros: Micros) {
-        self.stop_with(now_micros, self.cfg.hard_stop_fade_frames);
+        let now = self.frames_at(now_micros);
+        let mut effects = std::mem::take(&mut self.scratch);
+        self.list.cut_all(now, self.cfg.hard_stop_fade_frames, &mut effects);
+        self.dispatch(&mut effects);
+        self.scratch = effects;
+    }
+
+    /// Fundidos globales de «Parar todo» (y Stop de control) y de Panic, en frames. Los fija la interfaz desde Preferencias.
+    pub fn set_stop_fades(&mut self, stop_frames: u32, panic_frames: u32) {
+        self.cfg.stop_fade_frames = stop_frames;
+        self.cfg.panic_fade_frames = panic_frames;
     }
 
     pub fn stop_all(&mut self, now_micros: Micros) {
@@ -211,6 +221,15 @@ where
         let mut effects = std::mem::take(&mut self.scratch);
         let fade = self.cfg.stop_fade_frames;
         self.list.apply_control(action, id, now, fade, &mut effects);
+        self.dispatch(&mut effects);
+        self.scratch = effects;
+    }
+
+    /// Corte rápido de una cue para relanzarla (salto a memoria en caliente): la rampa corta de siempre, sin su fundido.
+    pub fn cut_cue(&mut self, id: CueId, now_micros: Micros) {
+        let now = self.frames_at(now_micros);
+        let mut effects = std::mem::take(&mut self.scratch);
+        self.list.cut_cue(id, now, self.cfg.pause_fade_frames, &mut effects);
         self.dispatch(&mut effects);
         self.scratch = effects;
     }
@@ -368,9 +387,13 @@ where
                     }
                     let host_ns = self.cfg.origin_micros * 1_000 + self.timebase.frames_to_nanos(at_frames);
                     // Un arranque desde una memoria cae a mitad de la pista: entra con un micro-fade de 50 ms (sin clic).
-                    let from_memory = self.list.cue(cue).and_then(|c| c.audio_data()).is_some_and(|a| a.time_loops.start_override_secs.is_some());
-                    if from_memory {
-                        let fade_frames = (self.cfg.sample_rate / 20).max(1);
+                    // La cue puede pedir su propio fundido de entrada; manda el mayor de los dos.
+                    let audio = self.list.cue(cue).and_then(|c| c.audio_data()).map(|a| (a.time_loops.start_override_secs.is_some(), a.time_loops.fade_in_secs));
+                    let micro = if audio.is_some_and(|(from_memory, _)| from_memory) { (self.cfg.sample_rate / 20).max(1) } else { 0 };
+                    let own = audio.map_or(0.0, |(_, secs)| secs);
+                    let own = if own.is_finite() && own > 0.0 { (f64::from(own.min(qlab_protocol::cue_dto::MAX_CUE_FADE_SECS)) * f64::from(self.cfg.sample_rate)).round() as u32 } else { 0 };
+                    let fade_frames = micro.max(own);
+                    if fade_frames > 0 {
                         self.send(AudioCommand::PlayFadeIn { voice_id: voice_of(cue), start_host_time_ns: host_ns, fade_frames });
                     } else {
                         self.send(AudioCommand::Play { voice_id: voice_of(cue), start_host_time_ns: host_ns });
@@ -512,6 +535,53 @@ mod tests {
         assert!(matches!(drain(&mut r.cmd_rx)[..], [AudioCommand::PlayFadeIn { voice_id: 2, fade_frames: 2_400, .. }]), "50 ms a 48 kHz");
     }
 
+    #[test]
+    fn a_cue_with_its_own_fades_enters_with_them_and_leaves_with_the_longer_of_its_fade_and_the_global_one() {
+        let mut faded = audio_cue(1, 0.0, 0.0, DoNotContinue);
+        let mut from_memory = audio_cue(2, 0.0, 0.0, DoNotContinue);
+        for (c, fin, fout, mem) in [(&mut faded, 1.5f32, 2.0f32, None), (&mut from_memory, 0.01, 0.0, Some(4.0))] {
+            let crate::cue::CueKind::Audio(a) = &mut c.kind else { panic!("la cue de prueba es de audio") };
+            a.time_loops.fade_in_secs = fin;
+            a.time_loops.fade_out_secs = fout;
+            a.time_loops.start_override_secs = mem;
+        }
+        let mut r = rig(vec![faded, from_memory]);
+        r.sched.go(SEC);
+        assert!(matches!(drain(&mut r.cmd_rx)[..], [AudioCommand::PlayFadeIn { voice_id: 1, fade_frames: 72_000, .. }]), "1,5 s de entrada a 48 kHz");
+        // «Parar todo» global de 5 ms: la cue 1 pide 2 s y manda su fundido.
+        r.sched.stop_all(2 * SEC);
+        assert!(matches!(drain(&mut r.cmd_rx)[..], [AudioCommand::Stop { voice_id: 1, fade_frames: 96_000, .. }]), "2 s de salida");
+        // Desde una memoria con un fundido propio menor que el micro-fade: manda el micro-fade de 50 ms.
+        r.sched.go(3 * SEC);
+        assert!(matches!(drain(&mut r.cmd_rx)[..], [AudioCommand::PlayFadeIn { voice_id: 2, fade_frames: 2_400, .. }]));
+    }
+
+    #[test]
+    fn the_hard_stop_ignores_the_cue_fade_and_the_global_fades_can_be_changed() {
+        let mut faded = audio_cue(1, 0.0, 0.0, DoNotContinue);
+        let crate::cue::CueKind::Audio(a) = &mut faded.kind else { panic!("la cue de prueba es de audio") };
+        a.time_loops.fade_out_secs = 3.0;
+        let mut r = rig(vec![faded, audio_cue(2, 0.0, 0.0, DoNotContinue), audio_cue(3, 0.0, 0.0, DoNotContinue)]);
+        let stop_of = |cmds: &[AudioCommand], voice: u64| cmds.iter().find_map(|c| if let AudioCommand::Stop { voice_id, fade_frames, .. } = c { (*voice_id == voice).then_some(*fade_frames) } else { None });
+        r.sched.go(SEC);
+        drain(&mut r.cmd_rx);
+        r.sched.hard_stop_all(2 * SEC);
+        assert_eq!(stop_of(&drain(&mut r.cmd_rx), 1), Some(96), "la parada dura corta en 2 ms aunque la cue pida 3 s");
+        // Fundidos globales nuevos: Parar todo 1 s, Panic 2,5 s; una cue sin fundido propio los sigue.
+        r.sched.set_stop_fades(48_000, 120_000);
+        r.sched.go(3 * SEC);
+        drain(&mut r.cmd_rx);
+        r.sched.stop_all(4 * SEC);
+        assert_eq!(stop_of(&drain(&mut r.cmd_rx), 2), Some(48_000));
+        r.sched.go(5 * SEC);
+        drain(&mut r.cmd_rx);
+        r.sched.panic(6 * SEC);
+        assert_eq!(stop_of(&drain(&mut r.cmd_rx), 3), Some(120_000));
+        // El corte rápido (salto a memoria) tampoco respeta el fundido de la cue: la cue 1 sigue «parándose»
+        // (en esta prueba nadie confirma el fin de la voz) y se corta con la rampa corta de 5 ms.
+        r.sched.cut_cue(CueId(1), 7 * SEC);
+        assert_eq!(stop_of(&drain(&mut r.cmd_rx), 1), Some(240), "5 ms aunque la cue pida 3 s");
+    }
     #[test]
     fn go_sends_play_without_blocking_and_advances_the_playhead() {
         let mut r = rig(vec![audio_cue(1, 0.0, 0.0, DoNotContinue), audio_cue(2, 0.0, 0.0, DoNotContinue)]);

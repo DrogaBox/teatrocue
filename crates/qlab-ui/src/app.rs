@@ -516,6 +516,7 @@ impl QlabApp {
                     self.request_cues();
                     self.request_carts();
                     self.link.fire(ClientRequest::SetMasterDb { db: self.master_db });
+                    self.send_stop_fades();
                     if let Some(path) = self.reload_show_after_connect.take() {
                         self.load_show_path(path);
                     }
@@ -2164,7 +2165,15 @@ impl QlabApp {
     }
 
     /// Guarda las preferencias y aplica lo que cambió (silencio de Windows).
+    /// Los fundidos globales de Preferencias viven en el daemon: se mandan al conectar y al cambiarlos.
+    fn send_stop_fades(&mut self) {
+        self.link.fire(ClientRequest::SetStopFades { stop_secs: self.prefs.stop_fade_secs, panic_secs: self.prefs.panic_fade_secs });
+    }
+
     fn prefs_changed(&mut self) {
+        if self.is_connected() {
+            self.send_stop_fades();
+        }
         if !self.prefs.resume_after_stop {
             self.pending_resume = None;
             self.restore_resume_points();
@@ -2392,7 +2401,8 @@ impl QlabApp {
             self.hud(format!("Pre-roll: -{:.1}s -> Memoria [{name}]", marker - secs));
         }
         if self.telemetry.running.get(&id).is_some_and(|i| i.phase.is_some()) {
-            self.link.fire(ClientRequest::CueAction { cue_id: id, action: qlab_protocol::show_format::ControlActionDto::Stop });
+            // Corte rápido y relanzamiento: el fundido de salida de la cue es para parar, no para saltar dentro de ella.
+            self.link.fire(ClientRequest::CutCue { cue_id: id });
             let same = self.inspector.draft.as_ref().is_some_and(|d| d.id() == id && d.baseline.body.audio().is_some_and(|a| a.time_loops.start_override_secs == Some(secs)));
             if same {
                 self.restart_due = Some((Instant::now() + Duration::from_millis(150), id));

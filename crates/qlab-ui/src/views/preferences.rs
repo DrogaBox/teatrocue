@@ -82,6 +82,25 @@ pub fn show(ctx: &egui::Context, st: &mut PrefsUi, prefs: &mut Prefs, system_sou
             ui.label(RichText::new("Dos Espacios muy seguidos (nervios, un pedal que rebota) dispararían dos cues: el segundo se ignora y el aviso «GO repetido: ignorado» lo dice. Con el Bloqueo de función activo, Espacio y Esc también llegan aunque un campo de texto tenga el foco.").small().color(theme::TEXT_DIM));
             ui.add_space(8.0);
 
+            ui.label(RichText::new("Fundidos al parar").strong().size(15.0).color(theme::AMBER));
+            for (label, value, default, tip) in [
+                ("Parar todo y cue Stop", &mut prefs.stop_fade_secs, crate::prefs::DEFAULT_STOP_FADE_SECS, "Fundido del botón «Parar todo» y de las cues de control Stop"),
+                ("PANIC (Esc)", &mut prefs.panic_fade_secs, crate::prefs::DEFAULT_PANIC_FADE_SECS, "Fundido de Esc. Esc Esc sigue siendo la parada dura, sin fundido"),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    if ui.add(egui::Slider::new(value, 0.0..=crate::prefs::MAX_GLOBAL_FADE_SECS).step_by(0.1).suffix(" s").logarithmic(true)).on_hover_text(tip).changed() {
+                        changed = true;
+                    }
+                    if ui.small_button("De fábrica").clicked() && *value != default {
+                        *value = default;
+                        changed = true;
+                    }
+                });
+            }
+            ui.label(RichText::new("Una cue puede pedir un fundido de salida más largo en Time & Loops («Fundidos de la cue»): al pararla manda el mayor de los dos. 0 s = corte seco sin clic.").small().color(theme::TEXT_DIM));
+            ui.add_space(8.0);
+
             ui.label(RichText::new("Windows").strong().size(15.0).color(theme::AMBER));
             if crate::system_sounds::SUPPORTED {
                 if ui.checkbox(&mut prefs.mute_system_sounds, "Silenciar los sonidos de Windows mientras TeatroCue está abierto").changed() {

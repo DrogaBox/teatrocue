@@ -493,6 +493,13 @@ impl IpcContext {
             },
             ClientRequest::DeleteCue { cue_id } => ok_or(self.delete_cue(cue_id)),
             ClientRequest::MoveCue { cue_id, delta } => ok_or(self.ask(|reply| SeqCommand::MoveCue { id: CueId(cue_id), delta, reply }, SEQUENCER_TIMEOUT).and_then(|r| r).map(|_| ())),
+            ClientRequest::CutCue { cue_id } => ok_or(self.send_seq(SeqCommand::CutCue(CueId(cue_id)))),
+            ClientRequest::SetStopFades { stop_secs, panic_secs } => {
+                let frames = |secs: f32| if secs.is_finite() { (f64::from(secs.clamp(0.0, 30.0)) * f64::from(self.timebase.sample_rate())).round() as u32 } else { 0 };
+                // Un fundido de 0 s sigue siendo un corte sin clic (la rampa mínima de 5 ms de siempre).
+                let (stop_frames, panic_frames) = (frames(stop_secs).max(240), frames(panic_secs).max(240));
+                ok_or(self.send_seq(SeqCommand::SetStopFades { stop_frames, panic_frames }))
+            }
             ClientRequest::SetMasterDb { db } => {
                 let x10 = if db.is_finite() { (db * 10.0).round().clamp(crate::health::MASTER_MUTE_X10 as f32, crate::health::MASTER_MAX_X10 as f32) as i32 } else { 0 };
                 self.health.master_db_x10.store(x10, Ordering::Relaxed);

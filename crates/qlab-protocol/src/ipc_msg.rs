@@ -41,6 +41,10 @@ pub enum ClientRequest {
     ApplyEmergencyKey { key: String },
     /// Volumen maestro en dB (−60 o menos = silencio, máximo +6). No se guarda con el show.
     SetMasterDb { db: f32 },
+    /// Fundidos globales: «Parar todo» (y Stop de control) y Panic, en segundos (0 a 30). La parada dura no cambia.
+    SetStopFades { stop_secs: f32, panic_secs: f32 },
+    /// Corte rápido de una cue (5 ms, sin su fundido de salida): para relanzarla desde una memoria.
+    CutCue { cue_id: u64 },
     /// Acción sobre una cue concreta (Stop, Pause, Resume, Devamp, Load, Arm, Disarm, Go to).
     CueAction { cue_id: u64, action: crate::show_format::ControlActionDto },
     /// Devamp: la cue de audio sale de su slice infinito al final de la pasada en curso y sigue sin saltos.
@@ -156,6 +160,11 @@ pub struct CueSummary {
     /// Ruta completa del archivo de una cue de audio o vídeo (vacía si no tiene).
     #[serde(default)]
     pub file_path: String,
+    /// Fundidos propios de una cue de audio (segundos; 0 = ninguno).
+    #[serde(default)]
+    pub fade_in_secs: f32,
+    #[serde(default)]
+    pub fade_out_secs: f32,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -305,6 +314,8 @@ mod tests {
                     start_override_secs: None,
                     notes: "entra con telón".into(),
                     file_path: "/música/x.wav".into(),
+                    fade_in_secs: 0.5,
+                    fade_out_secs: 2.0,
                 }],
             },
             ServerResponse::ShowLoaded { name: "n".into(), cues: 3, warnings: vec!["w".into()] },

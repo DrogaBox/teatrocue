@@ -128,6 +128,21 @@ pub fn show(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>) {
         });
 }
 
+/// Fundidos propios de una cue para la columna Acción: `/1.0 \\2.5` (entrada, salida), vacío si no tiene.
+pub fn fade_label(fade_in: f32, fade_out: f32) -> String {
+    let mut s = String::new();
+    if fade_in > 0.0 {
+        s.push_str(&format!("/{fade_in:.1}"));
+    }
+    if fade_out > 0.0 {
+        if !s.is_empty() {
+            s.push(' ');
+        }
+        s.push_str(&format!("\\{fade_out:.1}"));
+    }
+    s
+}
+
 struct RowStyle {
     bg: Option<Color32>,
     fg: Color32,
@@ -314,7 +329,12 @@ fn action_cell(ui: &mut Ui, c: &CueSummary, info: Option<RunningInfo>, s: &RowSt
             }
         }
         (_, Some(d)) => {
-            ui.label(RichText::new(fmt_time(d)).monospace().color(if s.state == CueUiState::Completed { theme::TEXT_DIM } else { s.fg }));
+            let color = if s.state == CueUiState::Completed { theme::TEXT_DIM } else { s.fg };
+            ui.label(RichText::new(fmt_time(d)).monospace().color(color));
+            let fades = fade_label(c.fade_in_secs, c.fade_out_secs);
+            if !fades.is_empty() {
+                ui.label(RichText::new(fades).small().monospace().color(theme::TEXT_DIM)).on_hover_text("Fundidos de la cue: / entrada, \\ salida al parar (segundos)");
+            }
         }
         (_, None) => {
             ui.label(RichText::new(if c.kind == "group" { "grupo" } else { "inf" }).color(theme::TEXT_DIM));

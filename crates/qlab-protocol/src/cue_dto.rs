@@ -507,6 +507,8 @@ pub struct MemoryMark {
 }
 
 pub const MAX_MEMORIES: usize = 500;
+/// Tope de los fundidos propios de una cue (segundos).
+pub const MAX_CUE_FADE_SECS: f32 = 60.0;
 pub const MAX_MEMORY_NAME_CHARS: usize = 64;
 pub const MAX_MEMORY_NOTE_CHARS: usize = 1_000;
 
@@ -535,6 +537,12 @@ pub struct AudioTimeAndLoopsData {
     /// No toca la región ni los slices guardados: quitarlo devuelve la cue a como estaba.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_override_secs: Option<f64>,
+    /// Fundido de entrada al arrancar (segundos; 0 = ninguno). Si la cue arranca desde una memoria se usa el mayor
+    /// entre este y el micro-fade de 50 ms.
+    pub fade_in_secs: f32,
+    /// Fundido de salida al pararla (Esc, «Parar todo», cue de control Stop; segundos; 0 = el global). Se usa el
+    /// mayor entre este y el fundido global de la parada. La parada dura (Esc Esc) no lo respeta.
+    pub fade_out_secs: f32,
 }
 
 impl Default for AudioTimeAndLoopsData {
@@ -553,6 +561,8 @@ impl Default for AudioTimeAndLoopsData {
             fade_curve: Vec::new(),
             memories: Vec::new(),
             start_override_secs: None,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         }
     }
 }

@@ -393,6 +393,20 @@ pub fn show(ui: &mut Ui, d: &mut Draft, cx: &mut TabCtx, out: &mut InspectorOutp
         boxed(ui, speed_w, |ui| speed_ui(ui, t));
         boxed(ui, loops_w, |ui| loops_ui(ui, t));
     }
+    // Fila A bis: fundidos propios de la cue (entrada al arrancar, salida al pararla).
+    boxed(ui, avail.min(FADE_BOX_W), |ui| {
+        widgets::section(ui, "Fundidos de la cue", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let max = qlab_protocol::cue_dto::MAX_CUE_FADE_SECS;
+                ui.label("Entrada");
+                ui.add(egui::DragValue::new(&mut t.fade_in_secs).range(0.0..=max).speed(0.05).suffix(" s").min_decimals(1).max_decimals(2)).on_hover_text("Fundido al arrancar la cue (0 = entra seca)");
+                ui.add_space(12.0);
+                ui.label("Salida al parar");
+                ui.add(egui::DragValue::new(&mut t.fade_out_secs).range(0.0..=max).speed(0.05).suffix(" s").min_decimals(1).max_decimals(2)).on_hover_text("Fundido al pararla con Esc, «Parar todo» o una cue Stop. Manda el mayor entre este y el global de Preferencias. Esc Esc corta igual");
+            });
+            ui.label(RichText::new("Para ballet: entrada corta (0,3 s) y salida de 2 a 3 s para cerrar una variación sin corte.").small().color(theme::TEXT_DIM));
+        });
+    });
     // Fila B: Fade integrado.
     boxed(ui, avail.min(FADE_BOX_W), |ui| {
         widgets::section(ui, "Fade integrado", |ui| {

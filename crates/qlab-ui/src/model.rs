@@ -454,6 +454,8 @@ pub(crate) mod tests {
             start_override_secs: None,
             notes: String::new(),
             file_path: String::new(),
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
         }
     }
 
