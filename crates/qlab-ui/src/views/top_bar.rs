@@ -131,6 +131,11 @@ fn standby(ui: &mut Ui, v: &ViewCtx, width: f32) {
                 Some(c) => {
                     // Una sola línea: si el nombre no entra, se desplaza de lado a lado en vez de partirse o salirse del recuadro.
                     widgets::marquee(ui, &format!("{}  {}", c.number, c.name), egui::FontId::proportional(20.0), theme::AMBER, width, true);
+                    // Las notas de la cue en espera («esperar el saludo», «GO en el 3er acorde») se leen desde la cabina.
+                    let notes = standby_notes(&c.notes);
+                    if !notes.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(notes).size(15.0).color(theme::TEXT)).wrap());
+                    }
                 }
                 None => {
                     ui.label(RichText::new("— fin de la lista —").size(18.0).color(theme::TEXT_DIM));
@@ -138,6 +143,24 @@ fn standby(ui: &mut Ui, v: &ViewCtx, width: f32) {
             }
         });
     });
+}
+
+/// Notas de la cue en espera como se muestran en STANDBY: sin espacios de más, hasta 3 renglones y 240 caracteres
+/// (lo demás queda en el Inspector), con «…» si se cortó algo.
+pub fn standby_notes(notes: &str) -> String {
+    const MAX_LINES: usize = 3;
+    const MAX_CHARS: usize = 240;
+    let lines: Vec<&str> = notes.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut out = lines.iter().take(MAX_LINES).copied().collect::<Vec<_>>().join("\n");
+    let mut cut = lines.len() > MAX_LINES;
+    if out.chars().count() > MAX_CHARS {
+        out = out.chars().take(MAX_CHARS - 1).collect();
+        cut = true;
+    }
+    if cut {
+        out.push('…');
+    }
+    out
 }
 
 /// Vúmetros de la salida. Con 1 o 2 canales van uno al lado del otro en la misma fila; con más, en una rejilla compacta.
@@ -181,4 +204,19 @@ fn system_status(ui: &mut Ui, v: &ViewCtx) {
             widgets::led(ui, theme::AMBER, v.safe_mute, "safe mute activo");
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standby_notes;
+    #[test]
+    fn standby_notes_are_trimmed_and_capped_to_three_lines() {
+        assert_eq!(standby_notes("  "), "");
+        assert_eq!(standby_notes(" Esperar el saludo \n\n GO en el 3er acorde\n"), "Esperar el saludo\nGO en el 3er acorde");
+        assert_eq!(standby_notes("a\nb\nc\nd"), "a\nb\nc…");
+        let long = "x".repeat(300);
+        let out = standby_notes(&long);
+        assert_eq!(out.chars().count(), 240);
+        assert!(out.ends_with('…'));
+    }
 }

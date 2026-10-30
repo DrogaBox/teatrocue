@@ -452,6 +452,8 @@ pub(crate) mod tests {
             memories: vec![],
             file_sample_rate: 48_000,
             start_override_secs: None,
+            notes: String::new(),
+            file_path: String::new(),
         }
     }
 

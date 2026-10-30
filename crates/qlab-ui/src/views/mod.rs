@@ -50,6 +50,8 @@ pub enum Action {
     Redo,
     /// Archivo → Empaquetar show…: copia los medios y guarda el show en una carpeta autocontenida.
     BundleShow,
+    /// Archivo → Buscar archivos faltantes…: revincular los medios que no se encuentran desde una carpeta.
+    RelinkMedia,
     /// Archivo > Importar audio (convertir / copiar de CD).
     OpenAudioTools,
     /// Archivo → Exportar Guion Técnico…: planilla HTML imprimible con toda la obra.

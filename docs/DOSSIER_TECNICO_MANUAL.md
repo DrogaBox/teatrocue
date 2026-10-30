@@ -392,6 +392,12 @@ El pad muestra «SUENA» y se ilumina mientras suena (según la duración del ar
 
 ### 3.7 Modo «Show Lock» (Ctrl+L)
 
+**Foco y teclas en función.** Al activar el bloqueo se suelta el foco de cualquier campo de texto. Mientras está activo, GO (Espacio), PANIC (Esc) y Pausa (P) se atienden aunque un campo tenga el foco (la búsqueda del panel de Memorias sigue habilitada): el campo lo suelta y la tecla no se escribe en él. Sin bloqueo, un campo con el foco se queda con la tecla (se está editando).
+
+**Traba de doble GO.** Un segundo GO desde la interfaz dentro de `double_go_ms` (400 ms de fábrica, 0 a 2000, Preferencias → Función; `preferencias.json`) se ignora con el aviso «GO repetido: ignorado». No afecta a GO por OSC.
+
+**Notas en STANDBY.** El recuadro STANDBY muestra, debajo del número y el nombre de la cue en espera, sus notas (`CueSummary.notes`): hasta 3 renglones y 240 caracteres, con «…» si hay más.
+
 Etiqueta en la interfaz: **«Bloqueo de función»** (botón «Función BLOQUEADA» cuando está activo; el título de la ventana añade « [FUNCIÓN BLOQUEADA]» y la ventana dibuja un borde ámbar de 3 px).
 
 **Bloquea** (muestra «Bloqueo de función activo: Ctrl+L para desbloquear»):
@@ -443,6 +449,10 @@ El Show Lock **no persiste**: al abrir TeatroCue empieza desbloqueado. No afecta
 | Detección al arrancar | Busca entre los 8 shows recientes y el show sin nombre; ofrece el autoguardado solo si es **más nuevo** que el último guardado manual y **no está vacío** |
 | Diálogo | «Recuperar sesión»: «Se detectó una sesión previa cerrada abruptamente. ¿Desea recuperar los cambios autoguardados?» + «show … · autoguardado hace N min/h/días». Botones **Recuperar cambios** / **Descartar** (descartar borra el archivo) |
 | Tras recuperar | El show vuelve a ser el original, con cambios sin guardar; aviso «Sesión recuperada «…»: N cues. Guarde con Ctrl+S» |
+
+### 4.1b Archivos que no se encuentran (Archivo → Buscar archivos faltantes…)
+
+Cada vez que llega la lista de cues, la interfaz compara `CueSummary.file_path` de las cues de audio y vídeo con el disco. Si el conjunto de cues sin archivo cambió, un solo aviso lista las primeras cuatro (número, nombre y archivo) y remite a **Archivo → Buscar archivos faltantes…**. Esa opción pide una carpeta, la recorre con sus subcarpetas (hasta 8 niveles y 20.000 archivos) indexando por nombre de archivo en minúsculas (la primera aparición gana), pide el detalle de cada cue sin archivo, le pone la ruta encontrada, la arma y la guarda (`UpdateCue`, que recarga la voz). Al terminar, un resumen: cuántas se revincularon y cuáles siguen faltando. El show queda con cambios sin guardar. Bloqueado con Show Lock.
 
 ### 4.2 Empaquetar Show (Archivo → Empaquetar show…)
 

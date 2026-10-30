@@ -15,6 +15,8 @@ pub enum DialogKind {
     PickAudio,
     /// Carpeta de destino para empaquetar un show.
     PickBundleFolder,
+    /// Carpeta donde buscar los archivos de audio y vídeo que no se encuentran.
+    PickRelinkFolder,
     /// Archivo HTML donde exportar el guion técnico.
     ExportCueSheet,
     /// Archivo de audio de un pad de la botonera.
@@ -134,6 +136,7 @@ fn run_dialog_one(kind: DialogKind, d: rfd::FileDialog, file_name: Option<String
             })
         }
         DialogKind::PickBundleFolder => d.set_title("Carpeta donde empaquetar el show").pick_folder(),
+        DialogKind::PickRelinkFolder => d.set_title("Carpeta donde buscar los archivos faltantes").pick_folder(),
         DialogKind::PickCartAudio => d.set_title("Elegir el efecto del pad").add_filter("Audio (.wav .flac .mp3 .ogg)", &AUDIO_EXTENSIONS).pick_file(),
         DialogKind::PickAudio => {
             let all: Vec<&str> = AUDIO_EXTENSIONS.iter().chain(crate::media::VIDEO_EXTENSIONS.iter()).copied().collect();

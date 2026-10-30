@@ -101,6 +101,8 @@ fn fixture_with(tag: &str, vamp: bool) -> Fixture {
     let daemon = Daemon::start(dc).unwrap();
     let mut h = harness(AppConfig::new(socket));
     pump(&mut h, "conexión", |a| a.is_connected() && a.model.summaries.len() == 3 && a.inspector.draft.is_some());
+    // Las pruebas disparan GO tras GO sin pausa: la traba de doble GO solo se prueba donde se pide a propósito.
+    app_mut(&mut h).prefs.double_go_ms = 0;
     Fixture { h, _daemon: daemon, files: vec![wav, show] }
 }
 
@@ -606,6 +608,7 @@ fn a_freshly_started_empty_daemon_accepts_the_first_cue() {
     let _daemon = Daemon::start(dc).unwrap();
     let mut h = harness(AppConfig::new(socket));
     pump(&mut h, "conexión", |a| a.is_connected());
+    app_mut(&mut h).prefs.double_go_ms = 0;
     for _ in 0..10 {
         h.step();
     }
@@ -1888,6 +1891,104 @@ fn a_memory_armed_and_saved_is_not_written_to_the_show() {
     let _ = std::fs::remove_file(&out);
 }
 
+#[test]
+fn a_second_go_right_after_the_first_is_ignored_unless_the_guard_is_off() {
+    let mut f = fixture("doublego");
+    app_mut(&mut f.h).prefs.double_go_ms = crate::prefs::DEFAULT_DOUBLE_GO_MS;
+    f.h.key_press(egui::Key::Space);
+    f.h.step();
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "la cue 1 suena", |a| a.model.state_of(1) == CueUiState::Running);
+    pump(&mut f.h, "aviso de GO repetido", |a| a.hud_text() == Some("GO repetido: ignorado"));
+    for _ in 0..10 {
+        f.h.step();
+    }
+    assert_ne!(app(&f.h).model.state_of(2), CueUiState::Running, "el segundo Espacio no disparó la cue 2");
+    assert_eq!(app(&f.h).model.playhead, Some(2), "el playhead quedó en la 2, lista para el próximo GO");
+    // Sin traba (0 ms) los dos Espacios disparan dos cues.
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "parada", |a| a.model.state_of(1) != CueUiState::Running);
+    app_mut(&mut f.h).prefs.double_go_ms = 0;
+    f.h.key_press(egui::Key::Space);
+    f.h.step();
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "suenan la 2 y la 3", |a| a.model.state_of(2) == CueUiState::Running && a.model.state_of(3) == CueUiState::Running);
+}
+#[test]
+fn under_show_lock_space_fires_go_even_while_a_text_field_has_the_focus() {
+    let mut f = fixture("lockfocus");
+    // Sin bloqueo, el campo se queda con Espacio (se está escribiendo).
+    let inputs: Vec<_> = f.h.query_all_by_role(egui::accesskit::Role::TextInput).collect();
+    inputs.into_iter().nth(1).expect("campo Nombre").focus();
+    f.h.step();
+    assert!(f.h.ctx.egui_wants_keyboard_input(), "el campo tiene el foco");
+    f.h.key_press(egui::Key::Space);
+    for _ in 0..10 {
+        f.h.step();
+    }
+    assert_ne!(app(&f.h).model.state_of(1), CueUiState::Running, "escribiendo, Espacio no es GO");
+    // Con el Bloqueo: la búsqueda de memorias sigue activa y toma el foco, pero Espacio es GO igual.
+    f.h.key_press_modifiers(Modifiers::COMMAND, egui::Key::L);
+    pump(&mut f.h, "bloqueado y sin foco", |a| a.locked);
+    f.h.step();
+    assert!(!f.h.ctx.egui_wants_keyboard_input(), "Ctrl+L soltó el foco del campo");
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    for n in f.h.query_all_by_role(egui::accesskit::Role::TextInput).collect::<Vec<_>>() {
+        n.focus();
+    }
+    f.h.step();
+    assert!(f.h.ctx.egui_wants_keyboard_input(), "un campo (la búsqueda de memorias) tiene el foco");
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "GO llega igual", |a| a.model.state_of(1) == CueUiState::Running);
+    assert!(!f.h.ctx.egui_wants_keyboard_input(), "y el campo soltó el foco");
+}
+#[test]
+fn the_standby_box_shows_the_notes_of_the_cue_in_standby() {
+    let mut f = fixture("notes");
+    assert!(f.h.query_by_label_contains("Esperar el saludo").is_none());
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.basics.notes = "Esperar el saludo\n\nGO en el 3er acorde".into();
+    }
+    pump(&mut f.h, "notas guardadas", |a| a.model.summary(1).is_some_and(|c| c.notes.contains("saludo")));
+    f.h.step();
+    assert!(f.h.query_by_label_contains("Esperar el saludo").is_some(), "las notas se leen en STANDBY");
+    assert!(f.h.query_by_label_contains("GO en el 3er acorde").is_some());
+    // Al pasar el playhead a otra cue, STANDBY muestra la de esa cue (sin notas).
+    f.h.key_press(egui::Key::ArrowDown);
+    pump(&mut f.h, "playhead en la 2", |a| a.model.playhead == Some(2));
+    f.h.step();
+    assert!(f.h.query_by_label_contains("Esperar el saludo").is_none());
+}
+#[test]
+fn missing_media_is_reported_once_and_relinked_from_a_folder() {
+    let mut f = fixture("relink");
+    let dir = std::env::temp_dir().join(format!("qlab-ui-relink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("nueva").join("sub")).unwrap();
+    let wav = write_test_wav("relink-src", 2, 96_000, 48_000, |_, _| 0.3);
+    let lost = dir.join("vieja").join("Variacion de Kitri.wav");
+    std::fs::copy(&wav, dir.join("nueva").join("sub").join("Variacion de Kitri.wav")).unwrap();
+    let show = dir.join("show.json");
+    std::fs::write(&show, ShowFile { format: SHOW_FORMAT.into(), name: "Relink".into(), sample_rate: 48_000, carts: Default::default(), cues: vec![node(1, &wav), node(2, &lost)] }.to_json()).unwrap();
+    app_mut(&mut f.h).load_show_for_test(&show);
+    pump(&mut f.h, "show cargado con una cue sin archivo", |a| a.model.summaries.len() == 2 && a.model.summary(2).is_some_and(|c| !c.armed));
+    pump(&mut f.h, "un solo aviso con lo que falta", |a| a.toasts.iter().any(|t| t.text.starts_with("1 archivo de audio o vídeo no se encuentra") && t.text.contains("Variacion de Kitri") && t.text.contains("Buscar archivos faltantes")));
+    assert_eq!(app(&f.h).missing_media_for_test(), vec![2]);
+    // Una carpeta sin nada que sirva.
+    app_mut(&mut f.h).relink_to(dir.join("vieja"));
+    pump(&mut f.h, "carpeta vacía", |a| a.toasts.iter().any(|t| t.text.starts_with("No hay archivos de audio")));
+    // La carpeta nueva: se busca por nombre también en las subcarpetas y la cue queda armada con la ruta nueva.
+    app_mut(&mut f.h).relink_to(dir.join("nueva"));
+    pump(&mut f.h, "revinculada", |a| a.model.summary(2).is_some_and(|c| c.armed && c.file_path.contains("nueva") && c.file_path.ends_with("Variacion de Kitri.wav")));
+    pump(&mut f.h, "resumen", |a| a.toasts.iter().any(|t| t.text.starts_with("Se revincularon 1 archivo")));
+    assert!(app(&f.h).missing_media_for_test().is_empty());
+    assert!(app(&f.h).show_dirty, "hay que guardar el show");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&wav);
+}
 #[test]
 fn the_rehearsal_speed_buttons_change_the_rate_live_without_restarting_the_cue() {
     let mut f = fixture("varispeed");

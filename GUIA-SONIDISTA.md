@@ -12,6 +12,8 @@ Todo esto también está en el manual del programa (tecla **F1**).
 | Mover el playhead sin disparar | Flechas ↑ ↓ |
 | Pausar / reanudar | **P**: el cabezal queda quieto en la onda y al reanudar sigue desde ese mismo frame |
 | Marcar una memoria | **M** (o Enter) |
+| Notas de la cue en espera | Se leen grandes en el recuadro STANDBY, debajo del nombre (hasta 3 renglones; el resto en el Inspector) |
+| Doble GO | Un segundo Espacio dentro de 0,4 s se ignora («GO repetido: ignorado»); el tiempo se cambia en Opciones > Preferencias (0 = sin traba) |
 
 ## Memorias (como las «Ubicaciones de memoria» de Pro Tools)
 1. **Marcar**: con la cue sonando pulse **M** (o **Enter**, también el del teclado numérico). Se captura ese instante y aparece el cuadro **«Nombre de la memoria:»** ya enfocado: escriba el nombre y **Enter** (vacío = «Memoria N»), **Esc** cancela. También sirve con la cue parada: haga clic en la onda y pulse M.
@@ -36,7 +38,7 @@ La forma de onda se calcula en segundo plano, leyendo el archivo de corrido sin 
 - **Pre-roll de memorias**: selector **Off | 2s | 4s** en el panel de Memorias y en Time & Loops. Al saltar a una memoria arranca esos segundos antes del marcador (o desde 00:00.00 si no hay tanto), entra con un micro-fade de 50 ms y avisa «Pre-roll: -2.0s -> Memoria [nombre]». **Shift+clic** en una memoria aplica 2 s a ese salto.
 - **Velocidades de ensayo** (Time & Loops → Velocidad): 0.90× · 0.95× · 1.00× · 1.05×, en caliente y sin cortar el sonido. Doble clic en cualquiera, o en el número, vuelve a 1.000×.
 - **Teclado numérico**: **. N .** (o **. N Enter**) salta a la memoria número N; aparece «Memoria #N». Esc cancela la secuencia y sigue siendo PANIC.
-- **Bloqueo de función (Ctrl+L)**: candado en la barra de herramientas y borde ámbar. Bloquea soltar archivos, editar, borrar, duplicar, deshacer, nuevo/abrir y marcar memorias. Siguen vivos: Espacio (GO), Esc (Panic), selección, MASTER, saltos de memoria, Devamp, pads de Carts y Proyección.
+- **Bloqueo de función (Ctrl+L)**: candado en la barra de herramientas y borde ámbar. Bloquea soltar archivos, editar, borrar, duplicar, deshacer, nuevo/abrir y marcar memorias. Siguen vivos: Espacio (GO), Esc (Panic), selección, MASTER, saltos de memoria, Devamp, pads de Carts y Proyección. Al activarlo, ningún campo de texto se queda con el foco, y mientras está activo Espacio, Esc y P llegan aunque se esté escribiendo en un campo (p. ej. la búsqueda de memorias).
 - **Retomar al parar (ensayos)**: botón «Retomar al parar» (o Opciones). Encendido, parar con Esc o «Parar todo» deja la música lista en ese punto y el próximo GO la retoma desde ahí, con el pre-roll del panel de Memorias. Sirve una vez (al terminar esa música vuelve a su inicio), no se guarda en el show y se borra al activar el Bloqueo de función; con el Bloqueo puesto, parar no deja ningún punto.
 - **Atajos de teclado**: Opciones > Preferencias y atajos de teclado. Clic en la tecla de una orden y pulsar la nueva (Esc cancela); hasta dos teclas por orden; no deja repetir teclas ni usar los números y el punto (son del salto «. N .»). «Restaurar» vuelve a la de fábrica. Se guardan en `preferencias.json` junto a `audio.json`.
 - **Silenciar Windows**: botón «Silenciar Windows» / «Windows en silencio» (encendido de fábrica). Silencia la sesión «Sonidos del sistema» del mezclador de Windows en cada salida mientras TeatroCue está abierto; el show no pasa por ahí. Al cerrar se devuelve (también tras un cierre de golpe, al volver a abrir).
@@ -70,6 +72,7 @@ Después, el botón **PFL** del Inspector escucha la cue —y el **PFL** de cada
 - Cue **Memo/Espera**: no suena, dura el tiempo que indique; con «Auto-continue» encadena la siguiente.
 - Cue **OSC**: manda un mensaje a otro equipo (luces, otra PC).
 - **Archivo → Abrir reciente**, **Empaquetar show** (copia el show con todos sus audios).
+- **Archivos que no se encuentran**: al abrir un show cuyos audios cambiaron de lugar (otra PC, otro pendrive) aparece un solo aviso con los que faltan, y **Archivo → Buscar archivos faltantes…** pide la carpeta donde están ahora: se buscan por nombre, también en las subcarpetas, y las cues quedan armadas con la ruta nueva. Después, guardar el show.
 
 ## Audio
 **Ver → Configuración de audio…**: interfaz de sonido, canales, buffer y frecuencia. Aplicar reinicia el motor (se corta lo que suena) y recarga el show abierto.

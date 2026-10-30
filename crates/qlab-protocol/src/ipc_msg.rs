@@ -150,6 +150,12 @@ pub struct CueSummary {
     /// Punto de arranque fijado (memoria elegida o «retomar»); `None` si arranca en su Inicio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_override_secs: Option<f64>,
+    /// Notas de la cue, para mostrarlas grandes en STANDBY.
+    #[serde(default)]
+    pub notes: String,
+    /// Ruta completa del archivo de una cue de audio o vídeo (vacía si no tiene).
+    #[serde(default)]
+    pub file_path: String,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -297,6 +303,8 @@ mod tests {
                     memories: vec![crate::cue_dto::MemoryMark { secs: 1.5, name: "m".into(), note: "n".into() }],
                     file_sample_rate: 48_000,
                     start_override_secs: None,
+                    notes: "entra con telón".into(),
+                    file_path: "/música/x.wav".into(),
                 }],
             },
             ServerResponse::ShowLoaded { name: "n".into(), cues: 3, warnings: vec!["w".into()] },

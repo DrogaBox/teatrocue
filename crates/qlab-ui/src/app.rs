@@ -88,8 +88,63 @@ pub struct Toast {
     born: Instant,
 }
 
+/// Revinculación de archivos faltantes en curso.
+struct Relink {
+    /// Nombre de archivo (en minúsculas) → dónde está ahora. El primero que aparece gana.
+    by_name: HashMap<String, std::path::PathBuf>,
+    /// Cues cuyo archivo faltaba cuando se empezó.
+    pending: Vec<u64>,
+    /// Respuestas recibidas (detalle sin candidato, o guardado resuelto).
+    answered: usize,
+    relinked: usize,
+    not_found: Vec<String>,
+}
+impl Relink {
+    const MAX_FILES: usize = 20_000;
+    const MAX_DEPTH: usize = 8;
+    fn scan(dir: &std::path::Path, pending: Vec<u64>) -> Self {
+        let mut by_name = HashMap::new();
+        let mut stack = vec![(dir.to_path_buf(), 0usize)];
+        let mut seen = 0usize;
+        while let Some((d, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if depth < Self::MAX_DEPTH {
+                        stack.push((p, depth + 1));
+                    }
+                    continue;
+                }
+                let is_media = p.extension().and_then(|x| x.to_str()).is_some_and(|x| {
+                    let x = x.to_ascii_lowercase();
+                    crate::native_dialog::AUDIO_EXTENSIONS.contains(&x.as_str()) || crate::media::VIDEO_EXTENSIONS.contains(&x.as_str())
+                });
+                if !is_media {
+                    continue;
+                }
+                if let Some(name) = p.file_name().map(|n| n.to_string_lossy().to_lowercase()) {
+                    by_name.entry(name).or_insert(p);
+                }
+                seen += 1;
+                if seen >= Self::MAX_FILES {
+                    return Self { by_name, pending, answered: 0, relinked: 0, not_found: Vec::new() };
+                }
+            }
+        }
+        Self { by_name, pending, answered: 0, relinked: 0, not_found: Vec::new() }
+    }
+    /// Dónde está ahora el archivo que el show busca en `current`, por su nombre.
+    fn candidate_for(&self, current: &str) -> Option<&std::path::PathBuf> {
+        let name = std::path::Path::new(current).file_name()?.to_string_lossy().to_lowercase();
+        self.by_name.get(&name)
+    }
+}
 enum Pending {
     Cues,
+    /// Revinculación de archivos faltantes: detalle de la cue y su guardado con la ruta nueva.
+    RelinkDetail(u64),
+    RelinkUpdate(u64),
     /// Punto de arranque de «retomar desde donde se paró» (o su vuelta al original).
     StartPoint,
     Detail(u64),
@@ -206,6 +261,12 @@ pub struct QlabApp {
     pending_resume: Option<(u64, f64)>,
     resume_since: Option<Instant>,
     /// Cues con un punto de «retomar» puesto: el arranque que tenían antes (se les devuelve) y si ya se dispararon desde ahí.
+    /// Último GO disparado desde la interfaz (traba de doble GO).
+    last_go: Option<Instant>,
+    /// Cues sin archivo ya avisadas: cada vez que la lista cambia y faltan otros, un aviso nuevo.
+    reported_missing: Vec<u64>,
+    /// Revinculación en curso (Archivo → Buscar archivos faltantes…).
+    relink: Option<Relink>,
     resume_points: HashMap<u64, ResumePoint>,
     /// Cues armadas desde una memoria: sirve para un solo GO; al terminar o pararse, la cue vuelve a su arranque de antes.
     memory_arms: HashMap<u64, ResumePoint>,
@@ -326,6 +387,9 @@ impl QlabApp {
             system_sounds: None,
             pending_resume: None,
             resume_since: None,
+            last_go: None,
+            reported_missing: Vec::new(),
+            relink: None,
             resume_points: HashMap::new(),
             memory_arms: HashMap::new(),
             news_waiting: cfg.settings_path.as_deref().map(crate::novedades::seen_path).is_some_and(|p| crate::novedades::should_show(&p)),
@@ -482,6 +546,12 @@ impl QlabApp {
                 match r {
                     Ok(ServerResponse::Cues { cues }) => {
                         self.model.set_summaries(cues);
+                        // Archivos que no se encuentran: un solo aviso por cambio (al cargar un show, al agregar una cue).
+                        let missing = self.missing_media();
+                        if missing != self.reported_missing {
+                            self.reported_missing = missing;
+                            self.report_missing_media();
+                        }
                         for (id, mode) in &self.continue_overrides {
                             if let Some(c) = self.model.summaries.iter_mut().find(|c| c.id == *id) {
                                 c.continue_mode = *mode;
@@ -611,9 +681,8 @@ impl QlabApp {
                     self.show_dirty = false;
                     self.toast(ToastKind::Info, format!("Show «{name}» cargado: {cues} cues"));
                 }
-                for w in warnings {
-                    self.toast(ToastKind::Warn, w);
-                }
+                // Los avisos ya llegaron como eventos `[show]` del daemon; repetirlos duplicaría cada toast.
+                let _ = warnings;
             }
             (Pending::LoadShow(_), Ok(ServerResponse::Error { message })) => self.toast(ToastKind::Error, format!("No se pudo cargar el show: {message}")),
             (Pending::LoadShow(_), Err(e)) => self.toast(ToastKind::Error, format!("No se pudo cargar el show: {e}")),
@@ -720,6 +789,49 @@ impl QlabApp {
                 };
                 self.toast(ToastKind::Error, format!("No se pudo crear la cue de «{}»: {why}", cue_name_of(&path)));
                 self.next_import();
+            }
+            (Pending::RelinkDetail(id), r) => {
+                let found = match (r, self.relink.as_ref()) {
+                    (Ok(ServerResponse::CueDetail { node, .. }), Some(job)) => {
+                        let current = node.basics.file_target.as_ref().map(|t| t.absolute_path.clone()).unwrap_or_default();
+                        match job.candidate_for(&current) {
+                            Some(new_path) => {
+                                let mut node = *node;
+                                node.basics.file_target = Some(qlab_protocol::cue_dto::MediaTarget { absolute_path: new_path.to_string_lossy().into_owned(), ..Default::default() });
+                                node.basics.armed = true;
+                                let tag = self.new_tag(Pending::RelinkUpdate(id));
+                                self.link.request(tag, ClientRequest::UpdateCue { node: Box::new(node) });
+                                true
+                            }
+                            None => {
+                                self.relink_miss(id, &current);
+                                false
+                            }
+                        }
+                    }
+                    _ => {
+                        self.relink_miss(id, "");
+                        false
+                    }
+                };
+                if !found {
+                    self.relink_step();
+                }
+            }
+            (Pending::RelinkUpdate(id), r) => {
+                match r {
+                    Ok(ServerResponse::Ok) => {
+                        if let Some(job) = self.relink.as_mut() {
+                            job.relinked += 1;
+                        }
+                        self.show_dirty = true;
+                        self.refresh_cues = true;
+                    }
+                    Ok(ServerResponse::Error { message }) => self.relink_miss(id, &message),
+                    Ok(_) => {}
+                    Err(e) => self.relink_miss(id, &e),
+                }
+                self.relink_step();
             }
             (Pending::ImportDetail(id, path), Ok(ServerResponse::CueDetail { node, .. })) => {
                 let mut node = *node;
@@ -866,6 +978,13 @@ impl QlabApp {
         if !self.is_connected() || self.model.playhead.is_none() {
             return;
         }
+        // Traba de doble GO: dos pulsaciones muy seguidas (nervios, un pedal que rebota) dispararían dos cues.
+        let guard = Duration::from_millis(self.prefs.double_go_ms);
+        if !guard.is_zero() && self.last_go.is_some_and(|t| t.elapsed() < guard) {
+            self.hud("GO repetido: ignorado");
+            return;
+        }
+        self.last_go = Some(Instant::now());
         self.link.fire(ClientRequest::Go);
         self.follow_playhead = true;
         if let Some(next) = self.model.playhead.and_then(|p| self.model.next_top_level_after(p)) {
@@ -892,7 +1011,7 @@ impl QlabApp {
     fn blocked_by_lock(a: &Action) -> bool {
         matches!(
             a,
-            Action::OpenShowPicker | Action::PickAudioFile | Action::NewShow | Action::OpenRecent(_) | Action::Duplicate | Action::Undo | Action::Redo | Action::AddCue(_) | Action::DeleteSelected | Action::CycleContinue(_) | Action::MoveSelected(_)
+            Action::OpenShowPicker | Action::PickAudioFile | Action::NewShow | Action::OpenRecent(_) | Action::Duplicate | Action::Undo | Action::Redo | Action::AddCue(_) | Action::DeleteSelected | Action::CycleContinue(_) | Action::MoveSelected(_) | Action::RelinkMedia
         )
     }
 
@@ -905,6 +1024,15 @@ impl QlabApp {
             self.restore_resume_points();
         }
         self.hud(if self.locked { "Bloqueo de función: ACTIVADO" } else { "Bloqueo de función: desactivado" });
+    }
+
+    /// Suelta el foco del campo de texto que lo tenga (si hay uno).
+    fn drop_focus(ctx: &egui::Context) {
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
     }
 
     fn lock_refuses(&mut self) -> bool {
@@ -961,9 +1089,13 @@ impl QlabApp {
             Action::Redo => self.replay_history(false),
             Action::SaveShowAs => self.save_show_as(),
             Action::BundleShow => self.begin_bundle(),
+            Action::RelinkMedia => self.begin_relink(),
             Action::OpenAudioTools => self.audio_tools.open = true,
             Action::ExportCueSheet => self.begin_export_cue_sheet(),
-            Action::ToggleLock => self.toggle_lock(),
+            Action::ToggleLock => {
+                self.toggle_lock();
+                Self::drop_focus(ctx);
+            }
             Action::OpenProjector => {
                 self.open_projector();
                 // Windows y wgpu crean la superficie de la ventana nueva en el siguiente repintado: se pide ya, en las dos
@@ -1213,6 +1345,102 @@ impl QlabApp {
         }
     }
 
+    /// Cues de audio o vídeo cuyo archivo no está donde dice el show.
+    fn missing_media(&self) -> Vec<u64> {
+        self.model
+            .summaries
+            .iter()
+            .filter(|c| matches!(c.kind.as_str(), "audio" | "video") && !c.file_path.is_empty() && !std::path::Path::new(&c.file_path).exists())
+            .map(|c| c.id)
+            .collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn missing_media_for_test(&self) -> Vec<u64> {
+        self.missing_media()
+    }
+    /// Un solo aviso con todos los archivos que faltan (en vez de un toast por cue) y cómo arreglarlo.
+    fn report_missing_media(&mut self) {
+        let missing = self.missing_media();
+        if missing.is_empty() {
+            return;
+        }
+        let names: Vec<String> = missing.iter().filter_map(|id| self.model.summary(*id)).map(|c| {
+                let file = std::path::Path::new(&c.file_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                format!("{} {} ({file})", c.number, c.name)
+            })
+            .take(4)
+            .collect();
+        let more = if missing.len() > names.len() { format!(" y {} más", missing.len() - names.len()) } else { String::new() };
+        let n = missing.len();
+        self.toast(ToastKind::Error, format!("{n} archivo{} de audio o vídeo no se encuentra{}: {}{more}. Archivo > Buscar archivos faltantes… los busca en una carpeta.", if n == 1 { "" } else { "s" }, if n == 1 { "" } else { "n" }, names.join(", ")));
+    }
+    /// Archivo → Buscar archivos faltantes…: pide la carpeta donde están ahora los archivos.
+    pub fn begin_relink(&mut self) {
+        if !self.is_connected() {
+            return;
+        }
+        if self.missing_media().is_empty() {
+            self.toast(ToastKind::Info, "Todos los archivos del show están en su lugar");
+            return;
+        }
+        if self.relink.is_some() {
+            self.toast(ToastKind::Info, "Ya se están buscando los archivos");
+            return;
+        }
+        if self.dialogs.enabled() && !self.dialogs.open(DialogKind::PickRelinkFolder, self.start_dir(), None) {
+            self.toast(ToastKind::Info, "Ya hay un diálogo abierto");
+        }
+    }
+    /// Busca en `dir` (y sus subcarpetas) un archivo con el mismo nombre que cada uno de los que faltan y lo asigna.
+    pub(crate) fn relink_to(&mut self, dir: std::path::PathBuf) {
+        let missing = self.missing_media();
+        if missing.is_empty() || !self.is_connected() {
+            return;
+        }
+        let job = Relink::scan(&dir, missing);
+        if job.by_name.is_empty() {
+            self.toast(ToastKind::Warn, format!("No hay archivos de audio ni vídeo en {}", dir.display()));
+            return;
+        }
+        let ids = job.pending.clone();
+        self.relink = Some(job);
+        for id in ids {
+            let tag = self.new_tag(Pending::RelinkDetail(id));
+            self.link.request(tag, ClientRequest::GetCueDetail { cue_id: id });
+        }
+    }
+    fn relink_miss(&mut self, id: u64, detail: &str) {
+        let label = self.model.summary(id).map(|c| format!("{} {}", c.number, c.name)).unwrap_or_else(|| format!("cue {id}"));
+        let name = std::path::Path::new(detail).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty());
+        if let Some(job) = self.relink.as_mut() {
+            job.not_found.push(match name {
+                Some(n) => format!("{label} ({n})"),
+                None => label,
+            });
+        }
+    }
+    /// Una cue menos por resolver; al terminar, el resumen.
+    fn relink_step(&mut self) {
+        let Some(job) = self.relink.as_mut() else { return };
+        job.answered += 1;
+        if job.answered < job.pending.len() {
+            return;
+        }
+        let job = self.relink.take().expect("recién comprobado");
+        let (kind, mut text) = match (job.relinked, job.not_found.len()) {
+            (0, _) => (ToastKind::Warn, "No se encontró ninguno de los archivos faltantes en esa carpeta".to_string()),
+            (n, 0) => (ToastKind::Info, format!("Se revincularon {n} archivo{}. Guarde el show (Ctrl+S)", if n == 1 { "" } else { "s" })),
+            (n, _) => (ToastKind::Warn, format!("Se revincularon {n} archivo{}; siguen faltando", if n == 1 { "" } else { "s" })),
+        };
+        if !job.not_found.is_empty() {
+            text.push_str(": ");
+            text.push_str(&job.not_found.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
+            if job.not_found.len() > 4 {
+                text.push_str(&format!(" y {} más", job.not_found.len() - 4));
+            }
+        }
+        self.toast(kind, text);
+    }
     fn begin_pick_audio(&mut self) {
         let start = self
             .inspector
@@ -1239,6 +1467,7 @@ impl QlabApp {
             DialogKind::SaveShowAs => self.save_to(path),
             DialogKind::PickAudio => self.set_audio_file(path),
             DialogKind::PickBundleFolder => self.bundle_to(path),
+            DialogKind::PickRelinkFolder => self.relink_to(path),
             DialogKind::ExportCueSheet => self.export_cue_sheet_to(path),
             DialogKind::PickCartAudio => self.on_cart_file_picked(path),
             DialogKind::PickConvertFiles => {
@@ -2542,21 +2771,39 @@ impl QlabApp {
         }
         if keys.lock {
             self.toggle_lock();
+            // Al entrar en función ningún campo se queda con el foco: Espacio y Esc son del show.
+            Self::drop_focus(ctx);
         }
         // Con un cuadro modal abierto (nombre de memoria, recuperación de sesión, configuración de audio) las teclas son
         // suyas: Esc lo cierra y NO debe disparar un Panic, ni Espacio un GO, mientras se está en medio de otra cosa.
         if self.picker.is_some() || self.confirm.is_some() || self.help.any_open() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open {
             return;
         }
+        let typing = ctx.egui_wants_keyboard_input();
+        // En función (Bloqueo activo) GO, PANIC y Pausa llegan aunque un campo de texto tenga el foco: el campo lo
+        // suelta y la tecla no se escribe en él. Sin Bloqueo, el campo se queda con la tecla (se está editando).
+        if typing && self.locked && (keys.go || keys.panic || keys.pause) {
+            Self::drop_focus(ctx);
+            if keys.go {
+                self.go();
+            }
+            if keys.pause {
+                self.toggle_pause();
+            }
+            if keys.panic {
+                self.panic_press();
+            }
+            return;
+        }
         // «. N .»: salto a una memoria por número. Mientras se teclea consume dígitos, Enter y el punto.
-        if ctx.egui_wants_keyboard_input() {
+        if typing {
             self.num_nav = None;
         } else if self.handle_num_nav(ctx) {
             return;
         }
         // Los pads responden aunque la ventana de Carts tenga el foco, pero no mientras se escribe en un campo.
-        self.handle_pad_keys(ctx, ctx.egui_wants_keyboard_input());
-        if ctx.egui_wants_keyboard_input() {
+        self.handle_pad_keys(ctx, typing);
+        if typing {
             return;
         }
         if keys.carts {
@@ -2787,6 +3034,7 @@ impl QlabApp {
                         ("Guardar como…   Ctrl+Mayús+S", Action::SaveShowAs),
                         ("Importar audio: convertir / copiar de CD…", Action::OpenAudioTools),
                         ("Empaquetar show…", Action::BundleShow),
+                        ("Buscar archivos faltantes…", Action::RelinkMedia),
                         ("Exportar Guion Técnico…", Action::ExportCueSheet),
                     ] {
                         if ui.button(label).clicked() {

@@ -66,6 +66,22 @@ pub fn show(ctx: &egui::Context, st: &mut PrefsUi, prefs: &mut Prefs, system_sou
             ui.label(RichText::new("Pausa (otra forma de frenar): congela la música en ese frame y la misma tecla la hace seguir.").small().color(theme::TEXT_DIM));
             ui.add_space(8.0);
 
+            ui.label(RichText::new("Función").strong().size(15.0).color(theme::AMBER));
+            ui.horizontal(|ui| {
+                ui.label("Traba de doble GO");
+                let mut ms = prefs.double_go_ms;
+                if ui.add(egui::Slider::new(&mut ms, 0..=crate::prefs::MAX_DOUBLE_GO_MS).step_by(50.0).suffix(" ms")).on_hover_text("Un segundo GO dentro de este tiempo se ignora. 0 = sin traba").changed() {
+                    prefs.double_go_ms = ms;
+                    changed = true;
+                }
+                if ui.small_button("De fábrica").clicked() && prefs.double_go_ms != crate::prefs::DEFAULT_DOUBLE_GO_MS {
+                    prefs.double_go_ms = crate::prefs::DEFAULT_DOUBLE_GO_MS;
+                    changed = true;
+                }
+            });
+            ui.label(RichText::new("Dos Espacios muy seguidos (nervios, un pedal que rebota) dispararían dos cues: el segundo se ignora y el aviso «GO repetido: ignorado» lo dice. Con el Bloqueo de función activo, Espacio y Esc también llegan aunque un campo de texto tenga el foco.").small().color(theme::TEXT_DIM));
+            ui.add_space(8.0);
+
             ui.label(RichText::new("Windows").strong().size(15.0).color(theme::AMBER));
             if crate::system_sounds::SUPPORTED {
                 if ui.checkbox(&mut prefs.mute_system_sounds, "Silenciar los sonidos de Windows mientras TeatroCue está abierto").changed() {

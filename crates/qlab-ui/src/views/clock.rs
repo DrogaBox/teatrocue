@@ -122,6 +122,8 @@ mod tests {
             memories: Vec::new(),
             file_sample_rate: 48_000,
             start_override_secs: None,
+            notes: String::new(),
+            file_path: String::new(),
         }
     }
 

@@ -395,6 +395,8 @@ pub fn cue_summaries(list: &CueList) -> Vec<CueSummary> {
             memories: cue.audio_data().map(|a| a.time_loops.memories.clone()).unwrap_or_default(),
             file_sample_rate: cue.audio_data().map_or(0, |a| a.time_loops.file_sample_rate),
             start_override_secs: cue.audio_data().and_then(|a| a.time_loops.start_override_secs),
+            notes: cue.basics.notes.clone(),
+            file_path: cue.basics.file_target.as_ref().map(|t| t.absolute_path.clone()).unwrap_or_default(),
         });
         if let CueKind::Group(g) = &cue.kind {
             for &child in &g.children {
