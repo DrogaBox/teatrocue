@@ -2126,6 +2126,7 @@ dependencies = [
  "qlab-protocol",
  "rand_core",
  "rpassword",
+ "sha2",
  "windows",
  "zeroize",
 ]

@@ -12,7 +12,9 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use installer_win::{install, parse_days, parse_menu_choice, parse_mode_choice, Console, LicenseTerm, Mode, Options, Registry, DEFAULT_TARGET, MAX_DAYS, MODE_MENU, SUCCESS_MESSAGE, TERM_MENU};
+use installer_win::admin::{self, AdminCtx, ADMIN_MENU};
+use installer_win::{install, locate_registry, parse_days, parse_menu_choice, parse_mode_choice, unlock_master_key, Console, LicenseTerm, Mode, Options, Registry, DEFAULT_TARGET, MAX_DAYS, MODE_MENU, SUCCESS_MESSAGE, TERM_MENU};
+use qlab_license::activation::MAX_EMERGENCY_DAYS;
 use qlab_license::{clock, embedded_public_key, fmt_date, now_unix, MachineId};
 use zeroize::Zeroizing;
 
@@ -89,7 +91,7 @@ fn choose_mode() -> Result<Option<(Mode, PathBuf)>, String> {
         println!("  {key}) {text}");
     }
     let mode = loop {
-        match parse_mode_choice(&read_line("Elija una opción [0-6]: ")?) {
+        match parse_mode_choice(&read_line("Elija una opción [0-7]: ")?) {
             Ok(Some(m)) => break m,
             Ok(None) => return Ok(None),
             Err(e) => println!("{e}"),
@@ -105,6 +107,81 @@ fn choose_mode() -> Result<Option<(Mode, PathBuf)>, String> {
     };
     println!();
     Ok(Some((mode, target)))
+}
+
+/// Menú de administración: pide la contraseña maestra una vez y atiende opciones hasta que se elige volver.
+fn admin_menu(target: PathBuf) -> Result<(), String> {
+    let media_root = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).ok_or("no se pudo ubicar el instalador")?;
+    let machine = MachineId::local()?;
+    let expected = embedded_public_key();
+    let key = unlock_master_key(&media_root, &mut Term, expected.as_ref())?;
+    let public = key.verifying_key();
+    let stores = clock::default_stores(&target);
+    let registry = locate_registry(&media_root);
+    println!("\nAdministrador: {}\n", machine);
+    loop {
+        println!("¿Qué desea hacer?");
+        for (k, text) in ADMIN_MENU {
+            println!("  {k}) {text}");
+        }
+        let choice = read_line("Elija una opción [0-9]: ")?;
+        let choice = choice.trim();
+        let ctx = AdminCtx { media_root: &media_root, target: &target, machine: &machine, public: &public, now: now_unix(), stores: &stores, registry: Some(registry.as_path()) };
+        println!();
+        let result: Result<String, String> = match choice {
+            "0" => return Ok(()),
+            "1" => Ok(admin::status_report(&ctx)),
+            "2" => admin::equipos_report(&registry, ctx.now).and_then(|(text, ids)| {
+                println!("{text}\n");
+                if ids.is_empty() {
+                    return Ok(String::new());
+                }
+                let n = read_line("Número de equipo para ver su historial (Enter para ninguno): ")?;
+                match n.trim().parse::<usize>() {
+                    Ok(i) if (1..=ids.len()).contains(&i) => admin::historial_report(&registry, &ids[i - 1], ctx.now),
+                    _ => Ok(String::new()),
+                }
+            }),
+            "3" => (|| {
+                let code = read_line("Código de solicitud (REQ-…): ")?;
+                let days = read_line(&format!("Días que concede la clave (1 a {MAX_EMERGENCY_DAYS}): "))?;
+                let days: u32 = days.trim().parse().map_err(|_| format!("`{}` no es un número de días", days.trim()))?;
+                admin::emergency_key(&ctx, &key, &code, days).map(|(text, _)| text)
+            })(),
+            "4" => {
+                let current = licencias_db::Db::open(&registry).ok().and_then(|db| db.puesto_de(machine.as_str()));
+                println!("Puesto actual: {}", current.as_deref().unwrap_or("(sin registrar)"));
+                let p = read_line("Nuevo puesto / ubicación: ")?;
+                admin::set_puesto(&registry, &machine, &p, ctx.now)
+            }
+            "5" => admin::verify_pen(&media_root, expected.is_none_or(|e| e == public)),
+            "6" => {
+                if Term.confirm(&format!("¿Quitar la licencia de {}? TeatroCue dejará de abrir hasta volver a instalarla", target.display())) {
+                    admin::remove_license(&ctx)
+                } else {
+                    Ok("Cancelado.".to_string())
+                }
+            }
+            "7" => {
+                if Term.confirm(&format!("¿Desinstalar TeatroCue de {}? Se borran los programas y la licencia; los shows no se tocan", target.display())) {
+                    admin::uninstall(&ctx)
+                } else {
+                    Ok("Cancelado.".to_string())
+                }
+            }
+            "8" => admin::backup_registry(&registry, ctx.now).map(|(text, _)| text),
+            "9" => match admin::admin_tool_path(&media_root) {
+                Some(exe) => std::process::Command::new(&exe).spawn().map(|_| format!("Abriendo {}", exe.display())).map_err(|e| format!("no se pudo abrir {}: {e}", exe.display())),
+                None => Err("no hay teatrocue-admin.exe en el pendrive (carpeta admin/)".into()),
+            },
+            other => Err(format!("opción inválida: `{other}`")),
+        };
+        match result {
+            Ok(text) if !text.is_empty() => println!("{text}\n"),
+            Ok(_) => println!(),
+            Err(e) => println!("NO SE PUDO: {e}\n"),
+        }
+    }
 }
 
 /// La consola de Windows usa por defecto una página de códigos que rompe los acentos.
@@ -186,6 +263,17 @@ fn main() -> ExitCode {
     // Sin opciones (doble clic): el menú elige lo mismo que las opciones de consola.
     let menu = if args.iter().all(|a| a == "--no-pause") {
         match choose_mode() {
+            Ok(Some((mode, t))) if mode.admin => {
+                let code = match admin_menu(t) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("\nNO SE PUDO: {e}");
+                        ExitCode::from(1)
+                    }
+                };
+                pause(no_pause);
+                return code;
+            }
             Ok(Some((mode, t))) => {
                 target = t;
                 Some(mode)

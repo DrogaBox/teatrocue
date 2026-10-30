@@ -20,6 +20,7 @@ qlab-protocol.workspace = true
 qlab-license.workspace = true
 licencias-db = { path = "../licencias-db" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
 rpassword = "7"
 zeroize = "1"
 

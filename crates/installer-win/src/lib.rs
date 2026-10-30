@@ -18,6 +18,8 @@ use qlab_license::clock::{self, MarkStore, TOLERANCE_SECS};
 use qlab_license::{issue, keyfile, verify_with, License, MachineId, LICENSE_FILE_NAME};
 use zeroize::Zeroizing;
 
+pub mod admin;
+
 pub const LICENSEE: &str = "Ballet Oficial de Córdoba";
 pub const DEFAULT_TARGET: &str = r"C:\TeatroCue";
 pub const MASTER_KEY_FILE: &str = "master.key.enc";
@@ -85,20 +87,26 @@ pub struct Mode {
     pub shortcut: bool,
     /// `--target`: hay que preguntar la carpeta de destino.
     pub ask_target: bool,
+    /// Menú de administración en vez de instalar.
+    pub admin: bool,
 }
 
-const INSTALL: Mode = Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false };
+const INSTALL: Mode = Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false, admin: false };
 
 /// Menú de inicio: (tecla, texto, modo). `None` = salir sin hacer nada.
-pub const MODE_MENU: [(&str, &str, Option<Mode>); 7] = [
+pub const MODE_MENU: [(&str, &str, Option<Mode>); 8] = [
     ("1", "Instalar o actualizar TeatroCue (programas y licencia)", Some(INSTALL)),
-    ("2", "Solo la licencia: renovarla o cambiar su duración, sin copiar los programas (--solo-licencia)", Some(Mode { license_only: true, ..INSTALL })),
-    ("3", "Reparar la licencia: solo la licencia y restablecer el registro de fecha de la PC (--solo-licencia --reset-reloj)", Some(Mode { license_only: true, reset_clock: true, ..INSTALL })),
-    ("4", "Instalar o actualizar y restablecer el registro de fecha de la PC (--reset-reloj)", Some(Mode { reset_clock: true, ..INSTALL })),
-    ("5", "Instalar o actualizar sin acceso directo en el escritorio (--no-shortcut)", Some(Mode { shortcut: false, ..INSTALL })),
-    ("6", "Instalar o actualizar en otra carpeta (--target)", Some(Mode { ask_target: true, ..INSTALL })),
+    ("2", "Solo la licencia: renovarla o cambiar su duración, sin copiar los programas", Some(Mode { license_only: true, ..INSTALL })),
+    ("3", "Reparar la licencia: solo la licencia y restablecer el registro de fecha de la PC", Some(Mode { license_only: true, reset_clock: true, ..INSTALL })),
+    ("4", "Instalar o actualizar y restablecer el registro de fecha de la PC", Some(Mode { reset_clock: true, ..INSTALL })),
+    ("5", "Instalar o actualizar sin acceso directo en el escritorio", Some(Mode { shortcut: false, ..INSTALL })),
+    ("6", "Instalar o actualizar en otra carpeta", Some(Mode { ask_target: true, ..INSTALL })),
+    ("7", "Administrador: estado, equipos, claves de emergencia, verificación, desinstalar… (contraseña maestra)", Some(ADMIN)),
     ("0", "Salir sin hacer nada", None),
 ];
+
+/// Entrada al menú de administración ([`admin`]).
+pub const ADMIN: Mode = Mode { admin: true, ..INSTALL };
 
 /// Interpreta una respuesta del menú de inicio: `Ok(Some(m))` elegido, `Ok(None)` = salir.
 pub fn parse_mode_choice(input: &str) -> Result<Option<Mode>, String> {
@@ -213,6 +221,32 @@ fn register_in_db(path: &Path, puesto: &str, machine: &MachineId, term: LicenseT
     Ok(())
 }
 
+/// Descifra `master.key.enc` del pendrive con la contraseña maestra (hasta [`MAX_PASSWORD_ATTEMPTS`] intentos). Si se
+/// conoce la clave pública de los programas, la clave tiene que corresponderle: si no, el pendrive mezcla versiones.
+pub fn unlock_master_key(media_root: &Path, console: &mut dyn Console, expected_public: Option<&VerifyingKey>) -> Result<ed25519_dalek::SigningKey, String> {
+    let enc_path = media_root.join(MASTER_KEY_FILE);
+    let enc = fs::read(&enc_path).map_err(|e| format!("no se puede leer {}: {e}", enc_path.display()))?;
+    let mut key = None;
+    for attempt in 1..=MAX_PASSWORD_ATTEMPTS {
+        let pw = console.ask_password(attempt)?;
+        match keyfile::decrypt(&enc, &pw) {
+            Ok(k) => {
+                key = Some(k);
+                break;
+            }
+            Err(keyfile::KeyfileError::BadPasswordOrCorrupt) => console.say(&format!("Contraseña incorrecta ({attempt}/{MAX_PASSWORD_ATTEMPTS}).")),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let key = key.ok_or("se agotaron los intentos de contraseña")?;
+    if let Some(expected) = expected_public {
+        if *expected != key.verifying_key() {
+            return Err("master.key.enc no corresponde a la clave pública de este instalador: el pendrive mezcla versiones distintas".into());
+        }
+    }
+    Ok(key)
+}
+
 /// Archivos de `dir` (recursivo), como rutas relativas con `/`.
 pub fn list_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -292,30 +326,9 @@ pub fn install(opts: &Options, console: &mut dyn Console) -> Result<Report, Stri
         return Err(format!("TeatroCue está abierto ({}). Ciérrelo (la interfaz y, si lo lanzó aparte, teatrocue-daemon) y vuelva a ejecutar el instalador. No se cambió nada.", busy.join(", ")));
     }
 
-    // 2. Clave privada: solo en memoria.
-    let enc_path = opts.media_root.join(MASTER_KEY_FILE);
-    let enc = fs::read(&enc_path).map_err(|e| format!("no se puede leer {}: {e}", enc_path.display()))?;
-    let mut key = None;
-    for attempt in 1..=MAX_PASSWORD_ATTEMPTS {
-        let pw = console.ask_password(attempt)?;
-        match keyfile::decrypt(&enc, &pw) {
-            Ok(k) => {
-                key = Some(k);
-                break;
-            }
-            Err(keyfile::KeyfileError::BadPasswordOrCorrupt) => console.say(&format!("Contraseña incorrecta ({attempt}/{MAX_PASSWORD_ATTEMPTS}).")),
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    let key = key.ok_or("se agotaron los intentos de contraseña; no se instaló nada")?;
-
-    // 3. La clave del pendrive tiene que ser la que reconocen los programas de este paquete.
+    // 2. Clave privada: solo en memoria. 3. Y tiene que ser la que reconocen los programas de este paquete.
+    let key = unlock_master_key(&opts.media_root, console, opts.expected_public.as_ref()).map_err(|e| if e.starts_with("se agotaron") { format!("{e}; no se instaló nada") } else { e })?;
     let public = key.verifying_key();
-    if let Some(expected) = opts.expected_public {
-        if expected != public {
-            return Err("master.key.enc no corresponde a la clave pública de este instalador: el pendrive mezcla versiones distintas".into());
-        }
-    }
 
     // 4. El reloj de esta PC tiene que ser creíble: una licencia emitida con la fecha falsa nacería adelantada o atrasada.
     let previous = existing_text.as_deref().and_then(|t| verify_with(t, &public, &opts.machine).ok());
@@ -479,6 +492,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use qlab_license::clock::{FileStore, BUILD_UNIX};
     use rand_core::OsRng;
+    use sha2::Digest;
 
     const DAY: u64 = 86_400;
 
@@ -723,14 +737,15 @@ mod tests {
     #[test]
     fn start_menu_answers_map_to_the_console_options() {
         let m = |k: &str| parse_mode_choice(k).unwrap().unwrap();
-        assert_eq!(m("1"), Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false });
+        assert_eq!(m("1"), Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false, admin: false });
+        assert!(m("7").admin, "administrador");
         assert!(m("2").license_only && !m("2").reset_clock, "--solo-licencia");
         assert!(m(" 3\n").license_only && m("3").reset_clock, "--solo-licencia --reset-reloj");
         assert!(!m("4").license_only && m("4").reset_clock, "--reset-reloj");
         assert!(!m("5").shortcut, "--no-shortcut");
         assert!(m("6").ask_target, "--target");
         assert_eq!(parse_mode_choice("0"), Ok(None), "salir");
-        assert!(parse_mode_choice("7").is_err() && parse_mode_choice("").is_err());
+        assert!(parse_mode_choice("8").is_err() && parse_mode_choice("").is_err());
     }
 
     #[test]
@@ -933,5 +948,171 @@ mod tests {
         assert_eq!(locate_registry(&media), media.join("..").join("admin").join(REGISTRY_FILE));
         fs::write(media.join("admin").join(REGISTRY_FILE), "").unwrap();
         assert_eq!(locate_registry(&media), media.join("admin").join(REGISTRY_FILE), "admin/ junto al instalador manda");
+    }
+
+    // ----- Sección Administrador -----
+    fn admin_ctx<'a>(root: &'a Path, target: &'a Path, machine: &'a MachineId, public: &'a VerifyingKey, stores: &'a [Box<dyn MarkStore>], registry: Option<&'a Path>) -> admin::AdminCtx<'a> {
+        admin::AdminCtx { media_root: root, target, machine, public, now: t0() + 3 * DAY, stores, registry }
+    }
+    #[test]
+    fn admin_status_describes_license_marks_programs_and_registry() {
+        let (root, key) = usb("adm-status", "pw-larga-1", &FULL);
+        let target = scratch("adm-status-target").join("TeatroCue");
+        let machine = MachineId::from_guid("pc-del-teatro");
+        let public = key.verifying_key();
+        let st = stores(&target);
+        let registry = root.join("admin").join(REGISTRY_FILE);
+        // Sin instalar: lo dice claro.
+        let before = admin::status_report(&admin_ctx(&root, &target, &machine, &public, &st, Some(&registry)));
+        assert!(before.contains("no hay license.key") && before.contains("no está instalado") && before.contains("todavía no existe"), "{before}");
+        // Instalación de 90 días registrada en el pendrive.
+        let mut o = opts(&root, &target, &key);
+        o.registry = Registry::At(registry.clone());
+        install(&o, &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        let after = admin::status_report(&admin_ctx(&root, &target, &machine, &public, &st, Some(&registry)));
+        assert!(after.contains(&format!("Machine ID de esta PC: {machine}")), "{after}");
+        assert!(after.contains("quedan 86 días") || after.contains("quedan 87 días"), "{after}");
+        assert!(after.contains("Fecha registrada") && after.contains("coincide con hoy"), "{after}");
+        assert!(after.contains("son iguales a los del pendrive"), "{after}");
+        assert!(after.contains("figura como «Cabina Principal»"), "{after}");
+        // Un programa distinto en el pendrive: la PC queda desactualizada.
+        fs::write(root.join(PAYLOAD_DIR).join("teatrocue-ui.exe"), "versión nueva").unwrap();
+        let stale = admin::status_report(&admin_ctx(&root, &target, &machine, &public, &st, Some(&registry)));
+        assert!(stale.contains("1 distintos") && stale.contains("distinto: teatrocue-ui.exe"), "{stale}");
+        // La PC atrasada respecto a lo registrado se denuncia.
+        let mut back = admin_ctx(&root, &target, &machine, &public, &st, Some(&registry));
+        back.now = t0() - 5 * DAY;
+        assert!(admin::status_report(&back).contains("ATRASADA"));
+    }
+    #[test]
+    fn admin_lists_equipos_and_their_history_and_changes_the_puesto() {
+        let (root, key) = usb("adm-eq", "pw-larga-1", &FULL);
+        let target = scratch("adm-eq-target").join("TeatroCue");
+        let registry = root.join("admin").join(REGISTRY_FILE);
+        let machine = MachineId::from_guid("pc-del-teatro");
+        assert!(admin::equipos_report(&registry, t0()).is_err(), "sin base todavía");
+        let mut o = opts(&root, &target, &key);
+        o.registry = Registry::At(registry.clone());
+        o.puesto = Some("Cabina 1".into());
+        install(&o, &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        let (text, ids) = admin::equipos_report(&registry, t0()).unwrap();
+        assert_eq!(ids, vec![machine.to_string()]);
+        assert!(text.contains("Cabina 1") && text.contains("Activa") && text.contains("1 equipos"), "{text}");
+        let hist = admin::historial_report(&registry, &ids[0], t0()).unwrap();
+        assert!(hist.contains("«Cabina 1»") && hist.contains(licencias_db::TIPO_PENDRIVE), "{hist}");
+        assert!(admin::historial_report(&registry, "ZZZZ-ZZZZ-ZZZZ-ZZZZ", t0()).is_err());
+        let msg = admin::set_puesto(&registry, &machine, "  Sala 2 ", t0()).unwrap();
+        assert!(msg.contains("«Cabina 1» → «Sala 2»"), "{msg}");
+        assert_eq!(licencias_db::Db::open(&registry).unwrap().puesto_de(machine.as_str()).as_deref(), Some("Sala 2"));
+        assert!(admin::set_puesto(&registry, &machine, "   ", t0()).is_err());
+        let (text, _) = admin::equipos_report(&registry, t0()).unwrap();
+        assert!(text.contains("Sala 2") && !text.contains("Cabina 1"), "{text}");
+    }
+    #[test]
+    fn admin_emergency_key_is_accepted_by_the_app_side_and_registered() {
+        use qlab_license::activation::{apply_activation_response, challenge_for, Env};
+        let (root, key) = usb("adm-emerg", "pw-larga-1", &FULL);
+        let target = scratch("adm-emerg-target").join("TeatroCue");
+        let registry = root.join("admin").join(REGISTRY_FILE);
+        let machine = MachineId::from_guid("pc-del-teatro");
+        let public = key.verifying_key();
+        let st = stores(&target);
+        let mut o = opts(&root, &target, &key);
+        o.registry = Registry::At(registry.clone());
+        o.term = Some(LicenseTerm::Days(30));
+        install(&o, &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        // La licencia venció hace 10 días y la PC pide ayuda.
+        let now = t0() + 40 * DAY;
+        let text = fs::read_to_string(target.join(LICENSE_FILE_NAME)).unwrap();
+        let lic = verify_with(&text, &public, &machine).unwrap();
+        let req = challenge_for(&lic, &st, None).to_string();
+        let mut ctx = admin_ctx(&root, &target, &machine, &public, &st, Some(&registry));
+        ctx.now = now;
+        assert!(admin::emergency_key(&ctx, &key, &req, 0).is_err() && admin::emergency_key(&ctx, &key, "REQ-BASURA", 15).is_err());
+        let (out, resp) = admin::emergency_key(&ctx, &key, &format!("  {req}\n"), 15).unwrap();
+        assert!(out.contains(&format!("[{resp}]")) && out.contains("WhatsApp") && out.contains("Anotada en"), "{out}");
+        // El lado de la app la canjea.
+        let env = Env { license_path: &target.join(LICENSE_FILE_NAME), now, stores: &st, anchors: &[], public: &public, local: &machine };
+        let applied = apply_activation_response(&env, &resp).unwrap();
+        assert!(applied.valid_until >= now + 14 * DAY, "{applied:?}");
+        // Y quedó en el registro como emergencia.
+        let db = licencias_db::Db::open(&registry).unwrap();
+        let eq = db.equipo_por_machine(machine.as_str()).unwrap().unwrap();
+        let hist = db.historial(eq.id).unwrap();
+        assert!(hist.iter().any(|m| m.tipo_emision == licencias_db::TIPO_EMERGENCIA && m.token_generado == resp), "{hist:?}");
+        // Una clave maestra ajena se rechaza antes de firmar.
+        let other = SigningKey::generate(&mut OsRng);
+        assert!(admin::emergency_key(&ctx, &other, &req, 15).is_err());
+    }
+    #[test]
+    fn admin_verifies_the_pen_against_sha256sums() {
+        let (root, key) = usb("adm-verify", "pw-larga-1", &FULL);
+        assert!(admin::verify_pen(&root, true).is_err(), "sin SHA256SUMS.txt");
+        let mut sums = String::new();
+        for f in FULL {
+            let data = fs::read(root.join(PAYLOAD_DIR).join(f)).unwrap();
+            sums.push_str(&format!("{:x}  payload/{f}\n", sha2::Sha256::digest(&data)));
+        }
+        sums.push_str(&format!("{:x}  master.key.enc\n", sha2::Sha256::digest(fs::read(root.join(MASTER_KEY_FILE)).unwrap())));
+        fs::write(root.join("SHA256SUMS.txt"), &sums).unwrap();
+        let ok = admin::verify_pen(&root, true).unwrap();
+        assert!(ok.contains("6 archivos correctos, 0 alterados, 0 faltan") && ok.contains("está íntegro"), "{ok}");
+        fs::write(root.join(PAYLOAD_DIR).join("ffmpeg.exe"), "cambiado").unwrap();
+        fs::remove_file(root.join(PAYLOAD_DIR).join("ffprobe.exe")).unwrap();
+        let bad = admin::verify_pen(&root, true).unwrap();
+        assert!(bad.contains("4 archivos correctos, 1 alterados, 1 faltan") && bad.contains("ALTERADO: payload/ffmpeg.exe") && bad.contains("NO está íntegro"), "{bad}");
+        assert!(admin::verify_pen(&root, false).unwrap().contains("NO corresponde"));
+        let _ = key;
+    }
+    #[test]
+    fn admin_removes_the_license_or_uninstalls_leaving_foreign_files() {
+        let (root, key) = usb("adm-unins", "pw-larga-1", &FULL);
+        let target = scratch("adm-unins-target").join("TeatroCue");
+        let machine = MachineId::from_guid("pc-del-teatro");
+        let public = key.verifying_key();
+        let st = stores(&target);
+        install(&opts(&root, &target, &key), &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        fs::write(target.join("Giselle.json"), "{}").unwrap();
+        let ctx = admin_ctx(&root, &target, &machine, &public, &st, None);
+        let msg = admin::remove_license(&ctx).unwrap();
+        assert!(msg.contains("Licencia quitada"), "{msg}");
+        assert!(!target.join(LICENSE_FILE_NAME).exists() && !target.join("license.state").exists());
+        assert!(target.join("teatrocue-ui.exe").exists(), "los programas quedan");
+        assert!(admin::remove_license(&ctx).is_err(), "ya no hay licencia");
+        // 5 programas + licencias/ffmpeg.txt del payload; la licencia ya no estaba.
+        let msg = admin::uninstall(&ctx).unwrap();
+        assert!(msg.contains("Se borraron 6 archivos") && msg.contains("Giselle.json"), "{msg}");
+        assert!(!target.join("teatrocue-ui.exe").exists() && !target.join("licencias").exists());
+        assert!(target.join("Giselle.json").exists(), "lo que no puso el instalador no se toca");
+        fs::remove_file(target.join("Giselle.json")).unwrap();
+        install(&opts(&root, &target, &key), &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        // Ahora con licencia y marca: 6 + license.key + license.state. Queda `sys/` (la marca de prueba fuera del instalador).
+        let msg = admin::uninstall(&ctx).unwrap();
+        assert!(msg.contains("Se borraron 8 archivos") && msg.contains("no se tocan): sys"), "{msg}");
+        fs::remove_dir_all(target.join("sys")).unwrap();
+        let msg = admin::uninstall(&ctx).unwrap();
+        assert!(msg.contains("quedó vacía") && !target.exists(), "{msg}");
+        assert!(admin::uninstall(&ctx).is_err());
+    }
+    #[test]
+    fn admin_backs_up_the_registry_without_overwriting() {
+        let (root, key) = usb("adm-backup", "pw-larga-1", &FULL);
+        let target = scratch("adm-backup-target").join("TeatroCue");
+        let registry = root.join("admin").join(REGISTRY_FILE);
+        assert!(admin::backup_registry(&registry, t0()).is_err());
+        let mut o = opts(&root, &target, &key);
+        o.registry = Registry::At(registry.clone());
+        install(&o, &mut Script::new(vec!["pw-larga-1"])).unwrap();
+        let (_, first) = admin::backup_registry(&registry, t0()).unwrap();
+        let (_, second) = admin::backup_registry(&registry, t0()).unwrap();
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|p| p.starts_with(root.join("admin").join("respaldos")) && p.is_file()));
+        assert!(second.iter().all(|p| !first.contains(p)), "no pisa el respaldo anterior");
+        let json = fs::read_to_string(&first[0]).unwrap();
+        assert!(json.contains("teatrocue-licencias/v1") && json.contains("Cabina Principal"), "{json}");
+        assert!(fs::read_to_string(&first[1]).unwrap().starts_with("institucion,puesto_sala"));
+        assert_eq!(admin::admin_tool_path(&root), None);
+        fs::write(root.join("admin").join("teatrocue-admin.exe"), "x").unwrap();
+        assert_eq!(admin::admin_tool_path(&root), Some(root.join("admin").join("teatrocue-admin.exe")));
     }
 }

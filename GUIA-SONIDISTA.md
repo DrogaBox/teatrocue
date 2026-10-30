@@ -86,5 +86,7 @@ Se activa en la misma ventana de audio (puerto 53000). Desde un celular o tablet
 - Si la licencia venció y no hay pendrive: «Reactivación de Emergencia» en la pantalla de bloqueo (copie el código y mándelo al desarrollador).
 
 ## Administración de licencias (solo desarrollador)
+Desde la PC del teatro, con el pendrive puesto: `Instalar_TeatroCue.exe` → opción **7 Administrador** (contraseña maestra). Ahí está el estado de la PC, los equipos licenciados, la clave de emergencia `REQ→RESP`, el puesto, la verificación del pendrive, quitar la licencia, desinstalar y el respaldo del registro. No hace falta escribir opciones.
+
 `teatrocue-admin` detecta el pendrive con `admin/licencias.db` (Linux: unidades bajo `/run/media` y `/media`; Windows: letras `D:` a `Z:`). Arriba a la derecha muestra «Pendrive no detectado» o «Pendrive detectado [ruta]» con el botón **Sincronizar ahora**, y al conectarlo sincroniza solo: fusiona en los dos sentidos las licencias y equipos (sin duplicar; las notas de ambos lados se conservan) y avisa «Sincronización completada: +N equipos nuevos, +M licencias importadas del pendrive».
 
