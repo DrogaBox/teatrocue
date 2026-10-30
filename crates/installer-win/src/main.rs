@@ -5,13 +5,14 @@
 //! ```
 //! Sin `--days`/`--perpetual` se pregunta cuánto debe durar la licencia. Si ya hay TeatroCue instalado, volver a ejecutarlo
 //! **renueva** la licencia (`--solo-licencia` no vuelve a copiar los programas).
+//! Abierto sin opciones (doble clic desde el pendrive) muestra un menú con los mismos modos que las opciones.
 //! La contraseña maestra se pide por consola sin eco (o de `TEATROCUE_MASTER_PASSWORD`, solo para automatizar).
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use installer_win::{install, parse_days, parse_menu_choice, Console, LicenseTerm, Options, Registry, DEFAULT_TARGET, MAX_DAYS, SUCCESS_MESSAGE, TERM_MENU};
+use installer_win::{install, parse_days, parse_menu_choice, parse_mode_choice, Console, LicenseTerm, Mode, Options, Registry, DEFAULT_TARGET, MAX_DAYS, MODE_MENU, SUCCESS_MESSAGE, TERM_MENU};
 use qlab_license::{clock, embedded_public_key, fmt_date, now_unix, MachineId};
 use zeroize::Zeroizing;
 
@@ -79,6 +80,31 @@ fn read_line(prompt: &str) -> Result<String, String> {
         return Err("no hay entrada por consola (use --days o --perpetual para instalar sin preguntar)".into());
     }
     Ok(line)
+}
+
+/// Menú de inicio (instalador abierto sin opciones). `Ok(None)` = salir sin hacer nada.
+fn choose_mode() -> Result<Option<(Mode, PathBuf)>, String> {
+    println!("¿Qué desea hacer?");
+    for (key, text, _) in MODE_MENU {
+        println!("  {key}) {text}");
+    }
+    let mode = loop {
+        match parse_mode_choice(&read_line("Elija una opción [0-6]: ")?) {
+            Ok(Some(m)) => break m,
+            Ok(None) => return Ok(None),
+            Err(e) => println!("{e}"),
+        }
+    };
+    let target = if mode.ask_target {
+        match read_line(&format!("Carpeta de destino [{DEFAULT_TARGET}]: "))?.trim() {
+            "" => PathBuf::from(DEFAULT_TARGET),
+            t => PathBuf::from(t.trim_matches('"')),
+        }
+    } else {
+        PathBuf::from(DEFAULT_TARGET)
+    };
+    println!();
+    Ok(Some((mode, target)))
 }
 
 /// La consola de Windows usa por defecto una página de códigos que rompe los acentos.
@@ -154,9 +180,26 @@ fn main() -> ExitCode {
     }
 
     let no_pause = args.iter().any(|a| a == "--no-pause");
-    let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).map_or_else(|| PathBuf::from(DEFAULT_TARGET), PathBuf::from);
+    let mut target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).map_or_else(|| PathBuf::from(DEFAULT_TARGET), PathBuf::from);
 
     println!("=== TeatroCue — instalación para el Ballet Oficial de Córdoba ===\n");
+    // Sin opciones (doble clic): el menú elige lo mismo que las opciones de consola.
+    let menu = if args.iter().all(|a| a == "--no-pause") {
+        match choose_mode() {
+            Ok(Some((mode, t))) => {
+                target = t;
+                Some(mode)
+            }
+            Ok(None) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("\nNO SE PUDO INSTALAR: {e}");
+                pause(no_pause);
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        None
+    };
     let result = (|| {
         let media_root = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).ok_or("no se pudo ubicar el instalador")?;
         let machine = MachineId::local()?;
@@ -170,12 +213,12 @@ fn main() -> ExitCode {
         let opts = Options {
             media_root,
             target,
-            create_shortcut: !args.iter().any(|a| a == "--no-shortcut"),
+            create_shortcut: menu.map_or_else(|| !args.iter().any(|a| a == "--no-shortcut"), |m| m.shortcut),
             machine,
             expected_public: embedded_public_key(),
             term,
-            license_only: args.iter().any(|a| a == "--solo-licencia").then_some(true),
-            clock_override: args.iter().any(|a| a == "--reset-reloj").then_some(true),
+            license_only: menu.map_or_else(|| args.iter().any(|a| a == "--solo-licencia").then_some(true), |m| Some(m.license_only)),
+            clock_override: menu.map_or_else(|| args.iter().any(|a| a == "--reset-reloj").then_some(true), |m| m.reset_clock.then_some(true)),
             now: now_unix(),
             anchors: clock::system_anchors(),
             stores,

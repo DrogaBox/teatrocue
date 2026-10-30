@@ -524,7 +524,7 @@ Las claves del desarrollador viven en `~/.config/teatrocue-keys/` (`master.key.e
 8. Crea el acceso directo **`TeatroCue.lnk`** en el Escritorio.
 9. Mensaje final: «TeatroCue instalado y activado exitosamente para el Ballet Oficial de Córdoba.»
 
-**Opciones:** `--days N`, `--perpetual`, `--solo-licencia` (renueva solo la licencia, sin copiar programas), `--reset-reloj`, `--target CARPETA`, `--no-shortcut`, `--no-pause`. Variable `TEATROCUE_MASTER_PASSWORD` para automatizar.
+**Opciones:** `--days N`, `--perpetual`, `--solo-licencia` (renueva solo la licencia, sin copiar programas), `--reset-reloj`, `--target CARPETA`, `--no-shortcut`, `--no-pause`. Variable `TEATROCUE_MASTER_PASSWORD` para automatizar. Abierto sin opciones (doble clic desde el pendrive) muestra un menú con los mismos modos: instalar o actualizar, solo la licencia, reparar la licencia (solo licencia + restablecer la fecha), instalar y restablecer la fecha, sin acceso directo y en otra carpeta.
 
 **Renovar / actualizar:** volver a ejecutar el instalador; detecta la instalación, muestra cuánto queda y pide nueva duración (cuenta desde hoy). Al actualizar programas: **cerrar TeatroCue** antes; si pregunta por la licencia, responder **n**. Los shows guardados no se tocan.
 

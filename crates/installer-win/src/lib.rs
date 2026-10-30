@@ -74,6 +74,38 @@ pub fn parse_menu_choice(input: &str) -> Result<Option<LicenseTerm>, String> {
     TERM_MENU.iter().find(|(k, ..)| *k == key).map(|(_, _, t)| *t).ok_or_else(|| format!("opción inválida: `{key}`"))
 }
 
+/// Qué hace el instalador abierto sin opciones (doble clic desde el pendrive): lo mismo que las opciones de consola.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mode {
+    /// `--solo-licencia`: no vuelve a copiar los programas.
+    pub license_only: bool,
+    /// `--reset-reloj`: acepta la fecha de hoy aunque la PC haya visto una posterior.
+    pub reset_clock: bool,
+    /// Sin `--no-shortcut`: crea el acceso directo en el escritorio.
+    pub shortcut: bool,
+    /// `--target`: hay que preguntar la carpeta de destino.
+    pub ask_target: bool,
+}
+
+const INSTALL: Mode = Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false };
+
+/// Menú de inicio: (tecla, texto, modo). `None` = salir sin hacer nada.
+pub const MODE_MENU: [(&str, &str, Option<Mode>); 7] = [
+    ("1", "Instalar o actualizar TeatroCue (programas y licencia)", Some(INSTALL)),
+    ("2", "Solo la licencia: renovarla o cambiar su duración, sin copiar los programas (--solo-licencia)", Some(Mode { license_only: true, ..INSTALL })),
+    ("3", "Reparar la licencia: solo la licencia y restablecer el registro de fecha de la PC (--solo-licencia --reset-reloj)", Some(Mode { license_only: true, reset_clock: true, ..INSTALL })),
+    ("4", "Instalar o actualizar y restablecer el registro de fecha de la PC (--reset-reloj)", Some(Mode { reset_clock: true, ..INSTALL })),
+    ("5", "Instalar o actualizar sin acceso directo en el escritorio (--no-shortcut)", Some(Mode { shortcut: false, ..INSTALL })),
+    ("6", "Instalar o actualizar en otra carpeta (--target)", Some(Mode { ask_target: true, ..INSTALL })),
+    ("0", "Salir sin hacer nada", None),
+];
+
+/// Interpreta una respuesta del menú de inicio: `Ok(Some(m))` elegido, `Ok(None)` = salir.
+pub fn parse_mode_choice(input: &str) -> Result<Option<Mode>, String> {
+    let key = input.trim();
+    MODE_MENU.iter().find(|(k, ..)| *k == key).map(|(_, _, m)| *m).ok_or_else(|| format!("opción inválida: `{key}`"))
+}
+
 /// Días escritos a mano: entre 1 y `MAX_DAYS`.
 pub fn parse_days(input: &str) -> Result<LicenseTerm, String> {
     let d: u32 = input.trim().parse().map_err(|_| format!("`{}` no es un número de días", input.trim()))?;
@@ -686,6 +718,19 @@ mod tests {
         assert!(c.said.iter().any(|l| l.contains("Fecha confirmada")));
         let l2 = verify_with(&fs::read_to_string(target.join("license.key")).unwrap(), &key.verifying_key(), &machine).unwrap();
         assert_eq!(clock::parse_mark(&stores(&target)[0].read().unwrap(), &l2), Ok(t0() + 2 * DAY), "la marca vuelve a la fecha confirmada");
+    }
+
+    #[test]
+    fn start_menu_answers_map_to_the_console_options() {
+        let m = |k: &str| parse_mode_choice(k).unwrap().unwrap();
+        assert_eq!(m("1"), Mode { license_only: false, reset_clock: false, shortcut: true, ask_target: false });
+        assert!(m("2").license_only && !m("2").reset_clock, "--solo-licencia");
+        assert!(m(" 3\n").license_only && m("3").reset_clock, "--solo-licencia --reset-reloj");
+        assert!(!m("4").license_only && m("4").reset_clock, "--reset-reloj");
+        assert!(!m("5").shortcut, "--no-shortcut");
+        assert!(m("6").ask_target, "--target");
+        assert_eq!(parse_mode_choice("0"), Ok(None), "salir");
+        assert!(parse_mode_choice("7").is_err() && parse_mode_choice("").is_err());
     }
 
     #[test]
