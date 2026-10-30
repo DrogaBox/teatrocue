@@ -2651,6 +2651,11 @@ impl QlabApp {
         if !d.dirty() || self.inspector.in_flight.as_ref() == Some(&d.node) {
             return;
         }
+        // Salto a memoria con la cue sonando: el motor rechaza el arranque nuevo mientras la cue todavía se apaga
+        // (fundido de la parada) y el salto se perdería; el guardado espera a que la cue se haya detenido.
+        if self.restart_after_save.is_some_and(|(rid, _)| rid == d.id()) && self.telemetry.running.get(&d.id()).is_some_and(|i| i.phase.is_some()) {
+            return;
+        }
         let (id, node) = (d.id(), d.node.clone());
         self.inspector.in_flight = Some(node.clone());
         let tag = self.new_tag(Pending::Update(id, node.clone()));
