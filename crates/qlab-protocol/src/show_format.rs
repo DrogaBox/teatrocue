@@ -384,17 +384,20 @@ impl ShowFile {
         go(&mut self.cues, &mut f);
     }
 
-    /// Resuelve los archivos relativos respecto a la carpeta del show `base`: una ruta no absoluta se cuelga
+    /// Resuelve los archivos relativos respecto a la carpeta del show `base`: una ruta relativa se cuelga
     /// de ella, y si la ruta absoluta ya no existe se prueba `relative_path`. Así un show empaquetado funciona
     /// donde se copie la carpeta.
     pub fn resolve_media_paths(&mut self, base: &std::path::Path) {
+        // Relativa de verdad: sin unidad ni raíz. En Windows `/Users/…` (un show guardado en un Mac) no es absoluta
+        // pero tampoco cuelga de la carpeta del show: se trata como una ruta absoluta que ya no existe.
+        let is_relative = |p: &std::path::Path| !p.is_absolute() && !p.has_root();
         self.walk_mut(|n| {
             let Some(t) = n.basics.file_target.as_mut() else { return };
             if t.absolute_path.is_empty() && t.relative_path.is_none() {
                 return;
             }
             let abs = std::path::Path::new(&t.absolute_path);
-            if !t.absolute_path.is_empty() && !abs.is_absolute() {
+            if !t.absolute_path.is_empty() && is_relative(abs) {
                 t.absolute_path = base.join(abs).to_string_lossy().into_owned();
             } else if !abs.is_file() {
                 if let Some(rel) = t.relative_path.as_deref().filter(|r| !r.is_empty()) {
@@ -407,7 +410,7 @@ impl ShowFile {
         });
         // Los pads de Carts solo guardan una ruta: si es relativa, también cuelga de la carpeta del show.
         for pad in &mut self.carts.pads {
-            if !pad.path.is_empty() && !std::path::Path::new(&pad.path).is_absolute() {
+            if !pad.path.is_empty() && is_relative(std::path::Path::new(&pad.path)) {
                 pad.path = base.join(&pad.path).to_string_lossy().into_owned();
             }
         }
@@ -600,7 +603,7 @@ mod tests {
         s.relativize_media_paths(base);
         assert_eq!(target_of(&s), ("audio/Entrada coro.wav".to_string(), Some("audio/Entrada coro.wav".to_string())));
         s.resolve_media_paths(std::path::Path::new("/otra/maquina/acto1"));
-        assert_eq!(target_of(&s).0, "/otra/maquina/acto1/audio/Entrada coro.wav", "una ruta relativa cuelga de la carpeta del show");
+        assert_eq!(std::path::PathBuf::from(target_of(&s).0), std::path::Path::new("/otra/maquina/acto1/audio/Entrada coro.wav"), "una ruta relativa cuelga de la carpeta del show");
         // Lo que está fuera de la carpeta no se toca.
         let mut out = show_with_file("/musica/otro.wav");
         out.relativize_media_paths(base);
@@ -617,7 +620,7 @@ mod tests {
         s.relativize_media_paths(base);
         assert_eq!((s.carts.pads[0].path.as_str(), s.carts.pads[1].path.as_str(), s.carts.pads[2].path.as_str()), ("audio/trueno.wav", "/efectos/viento.wav", ""));
         s.resolve_media_paths(std::path::Path::new("/otra/maquina/acto1"));
-        assert_eq!(s.carts.pads[0].path, "/otra/maquina/acto1/audio/trueno.wav");
+        assert_eq!(std::path::PathBuf::from(&s.carts.pads[0].path), std::path::Path::new("/otra/maquina/acto1/audio/trueno.wav"));
         assert_eq!((s.carts.pads[1].path.as_str(), s.carts.pads[2].path.as_str()), ("/efectos/viento.wav", ""), "lo de afuera y los pads vacíos no se tocan");
     }
 
@@ -629,7 +632,7 @@ mod tests {
         let mut s = show_with_file("/no/existe/a.wav");
         s.cues[0].basics.file_target.as_mut().unwrap().relative_path = Some("audio/a.wav".into());
         s.resolve_media_paths(&dir);
-        assert_eq!(target_of(&s).0, dir.join("audio/a.wav").to_string_lossy());
+        assert_eq!(std::path::PathBuf::from(target_of(&s).0), dir.join("audio/a.wav"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
