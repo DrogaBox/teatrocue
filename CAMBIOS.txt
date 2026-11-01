@@ -108,6 +108,22 @@ CORREGIDO
    Si la interfaz se abre pero no pide audio, el motor ya no reintenta en silencio para
    siempre: después de tres intentos aparece el cartel SIN AUDIO.
 
+20. GO y PANIC con ventanas abiertas
+   Con el Bloqueo de función (Ctrl+L), Espacio, Esc y P funcionan aunque haya cualquier
+   ventana abierta (Ayuda, Novedades, Preferencias, Configuración de audio...). Sin Bloqueo,
+   Espacio y P funcionan sobre Ayuda y Novedades, y Esc sigue cerrando la ventana.
+
+21. GO y PANIC no esperan a Guardar ni a Empaquetar
+   Guardar, el autoguardado, Empaquetar y Exportar el guion van por un canal aparte: aunque el
+   disco esté lento o se copien muchos audios, GO y PANIC responden en el acto. Con el Bloqueo
+   activo no se puede Empaquetar ni Importar audio.
+
+22. El ensayo no queda guardado en el show
+   Guardar o el autoguardado escriben cada cue como es en la función: sin el punto de "Retomar
+   al parar", sin el arranque de una memoria elegida y sin el bucle de ensayo. Ahora se puede
+   guardar con el bucle sonando: el bucle sigue y el archivo queda como corresponde. Lo que se
+   edita mientras se guarda queda marcado como pendiente.
+
 
 AGRADECIMIENTOS
 ---------------
