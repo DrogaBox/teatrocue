@@ -1,7 +1,7 @@
 ﻿TeatroCue - CAMBIOS
 ===================
 
-Versión del 30/10/2026, comparada con la del 21/10/2026.
+Versión del 01/11/2026, comparada con la del 21/10/2026.
 Los shows guardados se abren igual que antes; no hace falta cambiar nada en ellos.
 
 
