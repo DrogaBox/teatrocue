@@ -76,7 +76,7 @@ impl BackendConfig {
     /// El dispositivo de auriculares si es **otra placa** distinta de la principal.
     pub fn separate_monitor_device(&self) -> Option<&str> {
         let m = self.monitor_device.as_deref().map(str::trim).filter(|m| !m.is_empty())?;
-        let same = self.device.as_deref().is_some_and(|d| d.trim().eq_ignore_ascii_case(m));
+        let same = self.device.as_deref().is_some_and(|d| comparable_device_name(d) == comparable_device_name(m));
         (!same && usize::from(self.channels) + MONITOR_BUS_CHANNELS <= MAX_OUTPUT_CHANNELS).then_some(m)
     }
 
@@ -694,13 +694,12 @@ fn find_output_device(host_name: Option<&str>, wanted: &str) -> Result<cpal::Dev
     match select_device(&host, Some(wanted)) {
         Ok(d) => Ok(d),
         Err(first) => {
-            let w = wanted.to_lowercase();
             for id in cpal::available_hosts() {
                 let Ok(h) = cpal::host_from_id(id) else { continue };
                 let Ok(devices) = h.output_devices() else { continue };
                 for d in devices {
                     let n = d.description().map(|d| d.name().to_string()).unwrap_or_default();
-                    if n.to_lowercase() == w || (!w.is_empty() && n.to_lowercase().contains(&w)) {
+                    if device_matches(&n, wanted) {
                         return Ok(d);
                     }
                 }
@@ -708,6 +707,30 @@ fn find_output_device(host_name: Option<&str>, wanted: &str) -> Result<cpal::Dev
             Err(first)
         }
     }
+}
+
+/// Nombre de una salida para compararlo: sin mayúsculas y sin el número que Windows antepone cuando la misma placa
+/// vuelve a conectarse (o se enchufa en otro puerto USB): «Speakers (2- Focusrite USB)» es «speakers (focusrite usb)».
+pub fn comparable_device_name(name: &str) -> String {
+    let lower = name.trim().to_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find('(') {
+        out.push_str(&rest[..=at]);
+        rest = &rest[at + 1..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && rest[digits..].starts_with("- ") {
+            rest = &rest[digits + 2..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// La salida `name` es la buscada `wanted`: el mismo nombre (sin la numeración de Windows) o uno que lo contiene.
+fn device_matches(name: &str, wanted: &str) -> bool {
+    let (n, w) = (comparable_device_name(name), comparable_device_name(wanted));
+    n == w || (!w.is_empty() && n.contains(&w))
 }
 
 fn select_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, BackendError> {
@@ -718,7 +741,7 @@ fn select_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, 
             let mut names = Vec::new();
             for d in devices {
                 let n = d.description().map(|d| d.name().to_string()).unwrap_or_default();
-                if n.eq_ignore_ascii_case(wanted) || (!wanted.is_empty() && n.to_lowercase().contains(&wanted.to_lowercase())) {
+                if device_matches(&n, wanted) {
                     return Ok(d);
                 }
                 names.push(n);
@@ -870,6 +893,17 @@ mod tests {
             rt,
             reader,
         ))
+    }
+
+    #[test]
+    fn a_card_renumbered_by_windows_is_still_the_same_output() {
+        assert_eq!(comparable_device_name("Speakers (2- Focusrite USB)"), "speakers (focusrite usb)");
+        assert_eq!(comparable_device_name("Altavoces (12- Realtek(R) Audio)"), "altavoces (realtek(r) audio)");
+        assert!(device_matches("Speakers (2- Audio Device)", "Speakers (Audio Device)"), "la placa vuelve con otro número");
+        assert!(device_matches("Speakers (Audio Device)", "Speakers (3- Audio Device)"), "y también al revés");
+        assert!(device_matches("Speakers (2- Focusrite USB)", "focusrite"), "una parte del nombre sigue alcanzando");
+        assert!(!device_matches("Speakers (High Definition Audio Device)", "Speakers (Audio Device)"));
+        assert!(!device_matches("Line 2- out (Behringer)", "Line out (Behringer)"), "solo se quita el número al abrir paréntesis");
     }
 
     #[test]
