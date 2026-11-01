@@ -2087,6 +2087,16 @@ fn ctrl_clicking_two_memories_loops_the_passage_until_escape_restores_the_cue() 
         assert!(frame < 48_000 + 9_600, "se pasó del final del bucle: {frame}");
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Guardar con el bucle sonando: el archivo lleva la cue como era (sin bucle), con las memorias, y el ensayo sigue.
+    let out = std::env::temp_dir().join(format!("qlab-ui-loop-save-{}.teatroshow", std::process::id()));
+    f.files.push(out.clone());
+    app_mut(&mut f.h).save_show_as_for_test(&out);
+    pump(&mut f.h, "guardado con el bucle sonando", |_| out.is_file());
+    let saved = qlab_protocol::show_format::ShowFile::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let t = &saved.cues[0].body.audio().unwrap().time_loops;
+    assert!(!t.infinite_loop && t.start_time_sec == 0.0 && t.end_time_sec > 1.5 && t.memories.len() == 2, "{t:?}");
+    assert_eq!(app(&f.h).model.state_of(1), CueUiState::Running, "guardar no corta el bucle");
+    assert_eq!(app(&f.h).rehearsal_loop_for_test(), Some(1));
     // Esc: para y la cue vuelve a como estaba (sin slices ni arranque), sin tocar las memorias.
     f.h.key_press(egui::Key::Escape);
     pump(&mut f.h, "parada y restaurada", |a| {
@@ -3220,4 +3230,71 @@ fn quitting_with_audio_playing_or_the_show_lock_asks_first_and_cancel_keeps_the_
     app_mut(&mut f.h).apply_for_test(crate::views::Action::Quit);
     f.h.step();
     assert!(app(&f.h).confirm.is_none() && app(&f.h).quit_confirmed_for_test());
+}
+
+#[test]
+fn go_and_panic_still_work_over_the_help_and_news_windows_and_under_the_lock_over_any_window() {
+    let mut f = fixture("ventanas");
+    // Novedades se abrió sola (versión nueva): Espacio dispara igual.
+    app_mut(&mut f.h).help.open_news();
+    f.h.step();
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "GO con Novedades abierta", |a| a.model.state_of(1) == CueUiState::Running);
+    // Sin Bloqueo, Esc sobre la ayuda es de la ventana, no un PANIC.
+    app_mut(&mut f.h).help.toggle_manual();
+    f.h.step();
+    f.h.key_press(egui::Key::Escape);
+    f.h.step();
+    f.h.step();
+    assert!(!app(&f.h).panic_fired_for_test(), "sin Bloqueo, Esc sobre la ayuda no es un PANIC");
+    app_mut(&mut f.h).help.open = false;
+    // En función (Bloqueo), F1 por error y enseguida Esc: es un PANIC y la ayuda se cierra para que se vea la lista.
+    app_mut(&mut f.h).toggle_lock();
+    app_mut(&mut f.h).help.toggle_manual();
+    f.h.step();
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "PANIC con la ayuda abierta", |a| a.model.state_of(1) != CueUiState::Running && !a.help.any_open());
+    app_mut(&mut f.h).toggle_lock();
+    // Sin Bloqueo, un cuadro de entrada (configuración de audio) se queda con las teclas.
+    app_mut(&mut f.h).audio_ui.open = true;
+    f.h.step();
+    f.h.key_press(egui::Key::Space);
+    f.h.step();
+    f.h.step();
+    assert!(app(&f.h).model.state_of(2) != CueUiState::Running, "sin Bloqueo la ventana de audio no dispara");
+    // Con el Bloqueo, GO llega aunque la ventana siga abierta.
+    app_mut(&mut f.h).toggle_lock();
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "GO bajo Bloqueo con la ventana de audio abierta", |a| a.model.state_of(2) == CueUiState::Running);
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "PANIC bajo Bloqueo", |a| a.model.state_of(2) != CueUiState::Running);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_stuck_on_a_slow_disk_does_not_hold_back_go_panic_or_later_edits() {
+    let mut f = fixture("guardado-lento");
+    let path = std::env::temp_dir().join(format!("qlab-ui-lento-{}.teatroshow", std::process::id()));
+    let tmp = path.with_extension("teatroshow.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    // El temporal del guardado es un FIFO sin lector: escribirlo se queda esperando, como un pendrive dormido.
+    assert!(std::process::Command::new("mkfifo").arg(&tmp).status().unwrap().success());
+    f.files.extend([path.clone(), tmp.clone()]);
+    f.h.get_by_label("+ Audio Cue").click();
+    pump(&mut f.h, "alta", |a| cue_count(a) == 4 && a.show_dirty);
+    app_mut(&mut f.h).save_show_as_for_test(&path);
+    std::thread::sleep(Duration::from_millis(100));
+    // Con el guardado colgado, GO y PANIC llegan enseguida y una edición nueva también.
+    f.h.key_press(egui::Key::Space);
+    pump(&mut f.h, "GO no espera al guardado", |a| a.model.state_of(1) == CueUiState::Running);
+    f.h.key_press(egui::Key::Escape);
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "PANIC no espera al guardado", |a| a.model.state_of(1) != CueUiState::Running);
+    f.h.get_by_label("+ Fade Cue").click();
+    pump(&mut f.h, "edición durante el guardado", |a| cue_count(a) == 5);
+    // Se destraba el disco: el guardado termina, pero lo editado mientras tanto sigue marcado como pendiente.
+    let reader = std::thread::spawn(move || std::fs::read(&tmp).unwrap());
+    pump(&mut f.h, "guardado terminado", |a| a.show_path.as_deref() == Some(path.as_path()));
+    let _ = reader.join();
+    assert!(app(&f.h).show_dirty, "la Fade agregada mientras se guardaba no quedó en el archivo");
 }

@@ -82,8 +82,14 @@ pub enum ClientRequest {
     /// Empaqueta el show en la carpeta `dir`: copia sus archivos multimedia a `dir/audio/`, reescribe sus rutas
     /// como relativas y guarda `dir/<name>.json`.
     BundleShow { dir: String, name: String },
-    /// Serializa la lista completa al archivo `path` (JSON nativo) con el nombre `name`.
-    SaveShow { path: String, name: String },
+    /// Serializa la lista completa al archivo `path` (JSON nativo) con el nombre `name`. `rehearsal`: estado de ensayo
+    /// que no va al archivo (se escribe lo de la función, sin tocar el show en vivo).
+    SaveShow {
+        path: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "RehearsalState::is_empty")]
+        rehearsal: RehearsalState,
+    },
     /// Exporta el guion técnico (HTML imprimible) al archivo `path`. `durations` trae la duración conocida de cada cue
     /// (id, segundos) y `generated` la fecha que se imprime en la cabecera.
     ExportCueSheet { path: String, name: String, durations: Vec<(u64, f64)>, generated: String },
@@ -109,6 +115,51 @@ pub enum ClientRequest {
     Subscribe { events: bool },
     /// Apaga el daemon.
     Shutdown,
+}
+
+/// Lo que el ensayo cambió en vivo y no tiene que quedar en el show guardado.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RehearsalState {
+    /// Arranque con el que se escribe cada cue (deshace «retomar al parar» y las memorias armadas).
+    #[serde(default)]
+    pub start_points: Vec<(u64, Option<f64>)>,
+    /// Tiempos y bucles originales de una cue con bucle de ensayo. Las memorias se toman del show en vivo (las marcadas
+    /// durante el bucle se conservan).
+    #[serde(default)]
+    pub time_loops: Vec<(u64, crate::cue_dto::AudioTimeAndLoopsData)>,
+}
+
+impl RehearsalState {
+    pub fn is_empty(&self) -> bool {
+        self.start_points.is_empty() && self.time_loops.is_empty()
+    }
+
+    /// Aplica lo de arriba a las cues de un show exportado.
+    pub fn apply_to(&self, cues: &mut [CueNodeDto]) {
+        if self.is_empty() {
+            return;
+        }
+        fn walk(nodes: &mut [CueNodeDto], f: &mut impl FnMut(&mut CueNodeDto)) {
+            for n in nodes {
+                f(n);
+                if let crate::show_format::CueBody::Group(g) = &mut n.body {
+                    walk(&mut g.children, f);
+                }
+            }
+        }
+        walk(cues, &mut |n| {
+            let id = n.basics.unique_id.0;
+            let Some(t) = n.body.audio_mut().map(|a| &mut a.time_loops) else { return };
+            if let Some((_, original)) = self.time_loops.iter().find(|(c, _)| *c == id) {
+                let memories = std::mem::take(&mut t.memories);
+                *t = original.clone();
+                t.memories = memories;
+            }
+            if let Some(&(_, start)) = self.start_points.iter().find(|(c, _)| *c == id) {
+                t.start_override_secs = start;
+            }
+        });
+    }
 }
 
 /// Petición con identificador, para casar la respuesta.
@@ -359,6 +410,25 @@ mod tests {
         assert_eq!(back, r);
         let g: ClientMessage = serde_json::from_str(r#"{"id":3,"cmd":"get_cue_detail","cue_id":9}"#).unwrap();
         assert_eq!(g.request, ClientRequest::GetCueDetail { cue_id: 9 });
+    }
+
+    #[test]
+    fn a_save_without_rehearsal_state_still_parses_and_the_state_is_applied_only_to_the_file_copy() {
+        let m: ClientMessage = serde_json::from_str(r#"{"id":1,"cmd":"save_show","path":"/s.json","name":"n"}"#).unwrap();
+        assert_eq!(m.request, ClientRequest::SaveShow { path: "/s.json".into(), name: "n".into(), rehearsal: RehearsalState::default() });
+        use crate::show_format::{AudioBody, CueBody, NewCueKind};
+        let mut cue = CueNodeDto::new_default(NewCueKind::Audio, 4, "4".into());
+        if let CueBody::Audio(AudioBody { time_loops, .. }) = &mut cue.body {
+            time_loops.start_override_secs = Some(12.0);
+            time_loops.infinite_loop = true;
+            time_loops.memories = vec![crate::cue_dto::MemoryMark { secs: 3.0, name: "m".into(), note: String::new() }];
+        }
+        let original = crate::cue_dto::AudioTimeAndLoopsData { start_override_secs: Some(12.0), ..Default::default() };
+        let state = RehearsalState { start_points: vec![(4, None)], time_loops: vec![(4, original)] };
+        let mut cues = vec![cue];
+        state.apply_to(&mut cues);
+        let t = &cues[0].body.audio().unwrap().time_loops;
+        assert_eq!((t.start_override_secs, t.infinite_loop, t.memories.len()), (None, false, 1), "sin arranque de ensayo ni bucle; las memorias se quedan");
     }
 
     #[test]

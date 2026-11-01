@@ -161,7 +161,8 @@ enum Pending {
     Update(u64, CueNodeDto),
     LoadShow(Option<std::path::PathBuf>),
     NewShow,
-    Save { path: std::path::PathBuf, name: String },
+    /// `edits`: la cuenta de ediciones al pedir el guardado.
+    Save { path: std::path::PathBuf, name: String, edits: u64 },
     Bundle,
     CueSheet,
     GetCarts,
@@ -235,6 +236,8 @@ pub struct QlabApp {
     pub show_path: Option<std::path::PathBuf>,
     /// Hay cambios desde el último guardado, apertura o show nuevo.
     pub show_dirty: bool,
+    /// Cuenta de ediciones del show: un guardado solo lo deja «sin cambios» si nadie lo editó mientras se guardaba.
+    edits: u64,
     pub confirm: Option<Confirm>,
     /// El operador ya confirmó la salida: el próximo pedido de cierre de la ventana pasa.
     quit_confirmed: bool,
@@ -389,6 +392,7 @@ impl QlabApp {
             }),
             show_path: None,
             show_dirty: false,
+            edits: 0,
             confirm: None,
             quit_confirmed: false,
             select_after_refresh: None,
@@ -672,7 +676,7 @@ impl QlabApp {
                 }
                 match r {
                     Ok(ServerResponse::Ok) => {
-                        self.show_dirty = true;
+                        self.mark_dirty();
                         if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) {
                             if let Some((rid, secs)) = self.restart_after_save {
                                 // Relanzar desde `secs`: el arranque aparte de una memoria, o el inicio de la región de un bucle de ensayo.
@@ -708,7 +712,7 @@ impl QlabApp {
                 if let Some(original) = self.recover_as.take() {
                     // Era un autoguardado: el show vuelve a ser el original, con cambios sin guardar.
                     self.show_path = original;
-                    self.show_dirty = true;
+                    self.mark_dirty();
                     self.toast(ToastKind::Info, format!("Sesión recuperada «{name}»: {cues} cues. Guarde con Ctrl+S"));
                 } else {
                     if let Some(p) = &path {
@@ -731,7 +735,7 @@ impl QlabApp {
                 self.model.selected = None;
                 self.toast(ToastKind::Info, "Show nuevo");
             }
-            (Pending::Save { path, name }, Ok(ServerResponse::ShowSaved { cues, .. })) => {
+            (Pending::Save { path, name, edits }, Ok(ServerResponse::ShowSaved { cues, .. })) => {
                 self.remember_recent(path.clone());
                 // El guardado manual deja obsoleto el autoguardado del show anterior y el del show nuevo.
                 crate::autosave::remove(self.show_path.as_deref(), &self.autosave_dir());
@@ -739,7 +743,8 @@ impl QlabApp {
                 crate::autosave::remove(Some(&path), &self.autosave_dir());
                 self.show_path = Some(path.clone());
                 self.model.show_name = name.clone();
-                self.show_dirty = false;
+                // Lo editado mientras se guardaba (el guardado va por otra conexión) sigue pendiente.
+                self.show_dirty = self.edits != edits;
                 self.toast(ToastKind::Info, format!("Guardado «{name}» ({cues} cues) en {}", path.display()));
             }
             (Pending::CueSheet, Ok(ServerResponse::CueSheetExported { path, cues })) => self.toast(ToastKind::Info, format!("Guion técnico exportado ({cues} cues): {path}")),
@@ -776,12 +781,12 @@ impl QlabApp {
             (Pending::Bundle, Ok(ServerResponse::Error { message })) => self.toast(ToastKind::Error, format!("No se pudo empaquetar: {message}")),
             (Pending::Bundle, Err(e)) => self.toast(ToastKind::Error, format!("No se pudo empaquetar: {e}")),
             (Pending::AddCue, Ok(ServerResponse::CueAdded { cue_id })) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 self.select_after_refresh = Some(cue_id);
                 self.refresh_cues = true;
             }
             (Pending::DupAdd(src), Ok(ServerResponse::CueAdded { cue_id })) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 self.refresh_cues = true;
                 let tag = self.new_tag(Pending::DupDetail(src));
                 self.link.request(tag, ClientRequest::GetCueDetail { cue_id });
@@ -799,7 +804,7 @@ impl QlabApp {
                 self.link.request(tag, ClientRequest::UpdateCue { node: Box::new(copy) });
             }
             (Pending::DupUpdate(id), Ok(ServerResponse::Ok)) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 self.refresh_cues = true;
                 self.select_after_refresh = Some(id);
                 self.toast(ToastKind::Info, "Cue duplicada");
@@ -813,7 +818,7 @@ impl QlabApp {
                 self.toast(ToastKind::Error, format!("No se pudo duplicar la cue: {why}"));
             }
             (Pending::ImportAdd(path), Ok(ServerResponse::CueAdded { cue_id })) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 self.refresh_cues = true;
                 let tag = self.new_tag(Pending::ImportDetail(cue_id, path));
                 self.link.request(tag, ClientRequest::GetCueDetail { cue_id });
@@ -861,7 +866,7 @@ impl QlabApp {
                         if let Some(job) = self.relink.as_mut() {
                             job.relinked += 1;
                         }
-                        self.show_dirty = true;
+                        self.mark_dirty();
                         self.refresh_cues = true;
                     }
                     Ok(ServerResponse::Error { message }) => self.relink_miss(id, &message),
@@ -908,13 +913,13 @@ impl QlabApp {
                 self.next_import();
             }
             (Pending::Structure(_), Ok(ServerResponse::Ok)) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 self.refresh_cues = true;
             }
             (Pending::Structure(what), Ok(ServerResponse::Error { message })) => self.toast(ToastKind::Error, format!("No se pudo {what} la cue: {message}")),
             (Pending::Structure(what), Err(e)) => self.toast(ToastKind::Error, format!("No se pudo {what} la cue: {e}")),
             (Pending::UpdateReplay(id, node), Ok(ServerResponse::Ok)) => {
-                self.show_dirty = true;
+                self.mark_dirty();
                 if let Some(d) = self.inspector.draft.as_mut().filter(|d| d.id() == id) {
                     d.baseline = node;
                 }
@@ -1057,7 +1062,21 @@ impl QlabApp {
     fn blocked_by_lock(a: &Action) -> bool {
         matches!(
             a,
-            Action::OpenShowPicker | Action::PickAudioFile | Action::NewShow | Action::OpenRecent(_) | Action::Duplicate | Action::Undo | Action::Redo | Action::AddCue(_) | Action::DeleteSelected | Action::CycleContinue(_) | Action::MoveSelected(_) | Action::RelinkMedia
+            Action::OpenShowPicker
+                | Action::PickAudioFile
+                | Action::NewShow
+                | Action::OpenRecent(_)
+                | Action::Duplicate
+                | Action::Undo
+                | Action::Redo
+                | Action::AddCue(_)
+                | Action::DeleteSelected
+                | Action::CycleContinue(_)
+                | Action::MoveSelected(_)
+                | Action::RelinkMedia
+                // Copian archivos durante minutos: en función no.
+                | Action::BundleShow
+                | Action::OpenAudioTools
         )
     }
 
@@ -1383,40 +1402,23 @@ impl QlabApp {
     }
 
     fn save_to(&mut self, path: std::path::PathBuf) {
-        // Un bucle de ensayo no va al show: si la cue suena no se puede quitar todavía; si no, se quita y se guarda ya.
-        if let Some(l) = &self.rehearsal_loop {
-            if self.sounding(l.id) {
-                self.toast(ToastKind::Warn, "Hay un bucle de ensayo sonando: párelo (Esc) antes de guardar el show");
-                return;
-            }
-            self.end_rehearsal_loop();
-            if let Some(d) = &self.inspector.draft {
-                if d.dirty() {
-                    let (id, node) = (d.id(), d.node.clone());
-                    self.inspector.in_flight = Some(node.clone());
-                    let tag = self.new_tag(Pending::Update(id, node.clone()));
-                    self.link.request(tag, ClientRequest::UpdateCue { node: Box::new(node) });
-                }
-            }
-        }
-        // Un guardado pendiente de edición: primero se confirma lo que haya en el Inspector.
         let name = show_name_of(&path);
-        // Los puntos de «retomar» del ensayo no se guardan en el show: se quitan para guardar y se vuelven a poner.
-        let rehearsal: Vec<(u64, Option<f64>, f64)> = self
+        let tag = self.new_tag(Pending::Save { path: path.clone(), name: name.clone(), edits: self.edits });
+        self.link.request(tag, ClientRequest::SaveShow { path: path.to_string_lossy().into_owned(), name, rehearsal: self.rehearsal_state() });
+    }
+
+    /// Lo que el ensayo cambió en vivo y no va al archivo: los arranques de «retomar» y de las memorias armadas, y la
+    /// región original de una cue con bucle de ensayo. El daemon lo aplica a la copia que escribe, así el show en vivo
+    /// no se toca (ni siquiera con la cue sonando) y vale igual para el autoguardado.
+    fn rehearsal_state(&self) -> qlab_protocol::ipc_msg::RehearsalState {
+        let start_points = self
             .resume_points
             .iter()
             .chain(self.memory_arms.iter().filter(|(id, _)| !self.resume_points.contains_key(id)))
-            .filter(|(id, _)| !self.sounding(**id))
-            .map(|(&id, r)| (id, r.prev, r.start))
+            .map(|(&id, r)| (id, r.prev))
             .collect();
-        for &(id, prev, _) in &rehearsal {
-            self.send_start_point(id, prev);
-        }
-        let tag = self.new_tag(Pending::Save { path: path.clone(), name: name.clone() });
-        self.link.request(tag, ClientRequest::SaveShow { path: path.to_string_lossy().into_owned(), name });
-        for &(id, _, start) in &rehearsal {
-            self.send_start_point(id, Some(start));
-        }
+        let time_loops = self.rehearsal_loop.iter().map(|l| (l.id, l.original.clone())).collect();
+        qlab_protocol::ipc_msg::RehearsalState { start_points, time_loops }
     }
 
     // -- Bucle de ensayo entre dos memorias -------------------------------------------------------
@@ -1846,7 +1848,7 @@ impl QlabApp {
     /// Cambió un pad: se guarda en el daemon (y con el show) y, si cambió el archivo o el volumen, se vuelve a preparar.
     fn cart_edited(&mut self, i: usize) {
         self.link.fire(ClientRequest::SetCarts { bank: self.carts.bank.clone() });
-        self.show_dirty = true;
+        self.mark_dirty();
         let pad = self.carts.bank.pads[i].clone();
         let key = (pad.path.clone(), pad.gain_db.to_bits());
         if self.carts_prepared.get(&i) != Some(&key) {
@@ -2431,7 +2433,7 @@ impl QlabApp {
         let name = self.show_path.as_deref().map_or_else(|| self.model.show_name.clone(), show_name_of);
         self.autosave_inflight = true;
         let tag = self.new_tag(Pending::Autosave);
-        self.link.request(tag, ClientRequest::SaveShow { path: path.to_string_lossy().into_owned(), name });
+        self.link.request(tag, ClientRequest::SaveShow { path: path.to_string_lossy().into_owned(), name, rehearsal: self.rehearsal_state() });
     }
 
     /// Cierre limpio: el autoguardado ya no hace falta.
@@ -2474,6 +2476,11 @@ impl QlabApp {
             }
             None => {}
         }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.show_dirty = true;
+        self.edits += 1;
     }
 
     /// Lo que se perdería al cerrar ahora; vacío si se puede salir sin preguntar.
@@ -2996,11 +3003,38 @@ impl QlabApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        let keys = ctx.input(|i| scan_keys_with(i, &self.prefs.keys));
+        // Una ventana encima de la lista no puede dejar la función sin GO ni PANIC. Con el Bloqueo puesto GO, PANIC y
+        // Pausa llegan siempre (F1 está al lado de Esc). Sin Bloqueo, GO y Pausa pasan sobre las ventanas de lectura
+        // (Ayuda, Novedades, que se abre sola después de actualizar, Acerca de) mientras no se escriba en un campo, y
+        // Esc sigue siendo «cerrar la ventana».
+        let input_dialog = self.prefs_ui.open || self.picker.is_some() || self.confirm.is_some() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open;
+        if (input_dialog || self.help.any_open()) && (keys.go || keys.panic || keys.pause) {
+            let typing = ctx.egui_wants_keyboard_input();
+            if self.locked || (!input_dialog && !typing && !keys.panic) {
+                Self::drop_focus(ctx);
+                if keys.panic {
+                    // Después de un PANIC el operador tiene que ver la lista.
+                    self.help.open = false;
+                    self.help.about_open = false;
+                    self.help.news_open = false;
+                }
+                if keys.go {
+                    self.go();
+                }
+                if keys.pause {
+                    self.toggle_pause();
+                }
+                if keys.panic {
+                    self.panic_press();
+                }
+                return;
+            }
+        }
         // Con Preferencias abierta las teclas son de la ventana (se está eligiendo un atajo).
         if self.prefs_ui.open {
             return;
         }
-        let keys = ctx.input(|i| scan_keys_with(i, &self.prefs.keys));
         if keys.help && self.picker.is_none() && self.confirm.is_none() {
             self.help.toggle_manual();
             return;
@@ -3188,6 +3222,7 @@ impl QlabApp {
         self.quit_confirmed
     }
 
+    #[cfg(test)]
     pub(crate) fn on_exit_for_test(&mut self) {
         eframe::App::on_exit(self);
     }

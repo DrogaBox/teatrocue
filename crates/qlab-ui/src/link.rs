@@ -6,6 +6,9 @@
 //! * Reenvía a la UI los eventos del daemon y las respuestas (con la etiqueta de la petición).
 //! * Vigila la memoria compartida con sondeos baratos (cada 50 ms) y despierta a la UI solo cuando
 //!   algo visible cambia: así la ventana consume 0 % de CPU en reposo.
+//! * Guardar, empaquetar y exportar el guion van por una **segunda conexión** con su propio hilo: pueden tardar
+//!   minutos (copiar medios) y por la conexión principal GO, PANIC y la vigilancia del daemon no esperan detrás.
+//!   Todo lo pedido antes ya llegó al daemon cuando el pedido lento sale, así que el show guardado lo incluye.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -21,6 +24,11 @@ use crate::model::Telemetry;
 
 /// Espera máxima por una respuesta del daemon.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Peticiones que solo leen el show y pueden tardar: van por la conexión lenta.
+fn is_slow(request: &ClientRequest) -> bool {
+    matches!(request, ClientRequest::BundleShow { .. } | ClientRequest::SaveShow { .. } | ClientRequest::ExportCueSheet { .. })
+}
 
 /// Peticiones que pueden tardar (cargar o guardar shows, copiar medios al empaquetar).
 fn timeout_for(request: &ClientRequest) -> Duration {
@@ -123,6 +131,41 @@ struct Connection {
     heartbeat_changed: Instant,
 }
 
+/// Conexión aparte para los pedidos lentos, con su hilo. Se crea al conectar y se suelta al perder la conexión.
+struct SlowLane {
+    tx: Sender<(Option<u64>, ClientRequest)>,
+}
+
+impl SlowLane {
+    fn spawn(socket: &str, events: Sender<LinkEvent>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Self, String> {
+        let client = IpcClient::connect(socket).map_err(|e| e.to_string())?;
+        let (tx, rx) = channel::<(Option<u64>, ClientRequest)>();
+        std::thread::Builder::new()
+            .name("qlab-ui-link-lento".into())
+            .spawn(move || {
+                // Termina cuando el enlace suelta el emisor (conexión perdida o enlace cerrado).
+                for (tag, request) in rx {
+                    let timeout = timeout_for(&request);
+                    let result = client.request(request, timeout).map_err(|e| e.to_string());
+                    let event = match (tag, result) {
+                        (Some(tag), response) => Some(LinkEvent::Reply { tag, response }),
+                        (None, Ok(ServerResponse::Error { message })) => Some(LinkEvent::Failure(message)),
+                        (None, Err(e)) => Some(LinkEvent::Failure(e)),
+                        (None, Ok(_)) => None,
+                    };
+                    if let Some(e) = event {
+                        if events.send(e).is_err() {
+                            break;
+                        }
+                        wake();
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self { tx })
+    }
+}
+
 struct Worker {
     socket: String,
     commands: Receiver<LinkCommand>,
@@ -130,6 +173,7 @@ struct Worker {
     wake: Arc<dyn Fn() + Send + Sync>,
     stop: Arc<AtomicBool>,
     conn: Option<Connection>,
+    slow: Option<SlowLane>,
     last_attempt: Option<Instant>,
     last_watch: Instant,
     reported_down: bool,
@@ -137,7 +181,7 @@ struct Worker {
 
 impl Worker {
     fn new(socket: String, commands: Receiver<LinkCommand>, events: Sender<LinkEvent>, wake: Arc<dyn Fn() + Send + Sync>, stop: Arc<AtomicBool>) -> Self {
-        Self { socket, commands, events, wake, stop, conn: None, last_attempt: None, last_watch: Instant::now(), reported_down: false }
+        Self { socket, commands, events, wake, stop, conn: None, slow: None, last_attempt: None, last_watch: Instant::now(), reported_down: false }
     }
 
     fn emit(&self, e: LinkEvent) {
@@ -175,6 +219,8 @@ impl Worker {
                     self.try_connect();
                 }
             }
+            LinkCommand::Tagged { tag, request } if is_slow(&request) => self.send_slow(Some(tag), request),
+            LinkCommand::Fire(request) if is_slow(&request) => self.send_slow(None, request),
             LinkCommand::Tagged { tag, request } => {
                 let result = self.send(request);
                 self.emit(LinkEvent::Reply { tag, response: result });
@@ -184,6 +230,31 @@ impl Worker {
                 Ok(_) => {}
                 Err(e) => self.emit(LinkEvent::Failure(e)),
             },
+        }
+    }
+
+    /// Pedido lento: sale por la segunda conexión y la respuesta llega sola. Sin ella (no se pudo abrir), va por la
+    /// principal como antes.
+    fn send_slow(&mut self, tag: Option<u64>, request: ClientRequest) {
+        if self.conn.is_some() && self.slow.is_none() {
+            self.slow = SlowLane::spawn(&self.socket, self.events.clone(), Arc::clone(&self.wake)).ok();
+        }
+        let request = match &self.slow {
+            Some(lane) => match lane.tx.send((tag, request)) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::SendError((_, r))) => {
+                    self.slow = None;
+                    r
+                }
+            },
+            None => request,
+        };
+        let result = self.send(request);
+        match (tag, result) {
+            (Some(tag), response) => self.emit(LinkEvent::Reply { tag, response }),
+            (None, Ok(ServerResponse::Error { message })) => self.emit(LinkEvent::Failure(message)),
+            (None, Err(e)) => self.emit(LinkEvent::Failure(e)),
+            (None, Ok(_)) => {}
         }
     }
 
@@ -204,6 +275,8 @@ impl Worker {
     }
 
     fn lose(&mut self, reason: String) {
+        // El hilo lento termina solo al vaciar su cola (su pedido en curso falla con la conexión).
+        self.slow = None;
         if self.conn.take().is_some() {
             self.reported_down = true;
             self.last_attempt = Some(Instant::now());

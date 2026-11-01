@@ -294,8 +294,9 @@ impl IpcContext {
 
     /// Guarda la lista completa en `path` (JSON nativo). Escribe en un temporal y lo renombra para que un
     /// fallo a medias no deje un archivo truncado.
-    pub fn save_show(&self, path: &Path, name: &str) -> Result<ServerResponse, String> {
-        let cues = self.ask(SeqCommand::ExportShow, SEQUENCER_TIMEOUT)?;
+    pub fn save_show(&self, path: &Path, name: &str, rehearsal: &qlab_protocol::ipc_msg::RehearsalState) -> Result<ServerResponse, String> {
+        let mut cues = self.ask(SeqCommand::ExportShow, SEQUENCER_TIMEOUT)?;
+        rehearsal.apply_to(&mut cues);
         let mut show = ShowFile { format: SHOW_FORMAT.into(), name: name.to_string(), sample_rate: self.timebase.sample_rate(), carts: self.carts.lock().expect("envenenado").clone(), cues };
         if let Some(base) = path.parent() {
             show.relativize_media_paths(base);
@@ -573,7 +574,7 @@ impl IpcContext {
             ClientRequest::AdhocStopAll => ok_or(self.stop_all_adhoc()),
             ClientRequest::ExportCueSheet { path, name, durations, generated } => self.export_cue_sheet(Path::new(&path), &name, &durations, &generated).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::BundleShow { dir, name } => self.bundle_show(Path::new(&dir), &name).unwrap_or_else(|message| ServerResponse::Error { message }),
-            ClientRequest::SaveShow { path, name } => self.save_show(Path::new(&path), &name).unwrap_or_else(|message| ServerResponse::Error { message }),
+            ClientRequest::SaveShow { path, name, rehearsal } => self.save_show(Path::new(&path), &name, &rehearsal).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::UpdateCue { node } => ok_or(self.update_cue(*node)),
             ClientRequest::SetStartPoint { cue_id, start_secs } => ok_or(self.set_start_point(cue_id, start_secs)),
             ClientRequest::LoadShow { path } => match self.load_show_file(Path::new(&path)) {

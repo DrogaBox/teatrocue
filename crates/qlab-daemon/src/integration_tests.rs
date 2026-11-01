@@ -719,7 +719,7 @@ fn save_new_and_open_roundtrip_the_whole_show() {
     let path = temp_path("author-save", "json");
     let _guard = Cleanup(vec![path.clone()]);
     let before = cue_ids(&c);
-    match req(&c, ClientRequest::SaveShow { path: path.to_string_lossy().into(), name: "Mi show".into() }) {
+    match req(&c, ClientRequest::SaveShow { path: path.to_string_lossy().into(), name: "Mi show".into(), rehearsal: Default::default() }) {
         ServerResponse::ShowSaved { cues, .. } => assert_eq!(cues, 4),
         other => panic!("{other:?}"),
     }
@@ -739,10 +739,10 @@ fn save_new_and_open_roundtrip_the_whole_show() {
     // Guardar de nuevo da el mismo contenido (ida y vuelta sin pérdidas).
     let path2 = temp_path("author-save2", "json");
     let _guard2 = Cleanup(vec![path2.clone()]);
-    req(&c, ClientRequest::SaveShow { path: path2.to_string_lossy().into(), name: "Mi show".into() });
+    req(&c, ClientRequest::SaveShow { path: path2.to_string_lossy().into(), name: "Mi show".into(), rehearsal: Default::default() });
     assert_eq!(std::fs::read_to_string(&path).unwrap(), std::fs::read_to_string(&path2).unwrap());
     // Una ruta imposible es un error, no un pánico.
-    assert!(matches!(req(&c, ClientRequest::SaveShow { path: "/no/existe/x.json".into(), name: "x".into() }), ServerResponse::Error { .. }));
+    assert!(matches!(req(&c, ClientRequest::SaveShow { path: "/no/existe/x.json".into(), name: "x".into(), rehearsal: Default::default() }), ServerResponse::Error { .. }));
 }
 
 #[test]
@@ -1264,7 +1264,7 @@ fn the_cart_bank_is_saved_with_the_show_and_comes_back_when_it_is_loaded() {
     assert_eq!(req(&c, ClientRequest::SetCarts { bank: bank.clone() }), ServerResponse::Ok);
     let out = temp_path("carts-out", "json");
     let _cleanup = Cleanup(vec![out.clone()]);
-    assert!(matches!(req(&c, ClientRequest::SaveShow { path: out.to_string_lossy().into(), name: "Con carts".into() }), ServerResponse::ShowSaved { .. }));
+    assert!(matches!(req(&c, ClientRequest::SaveShow { path: out.to_string_lossy().into(), name: "Con carts".into(), rehearsal: Default::default() }), ServerResponse::ShowSaved { .. }));
     assert!(std::fs::read_to_string(&out).unwrap().contains("Aplauso"));
     // Un show nuevo la vacía; abrir el guardado la recupera.
     assert!(matches!(req(&c, ClientRequest::NewShow), ServerResponse::ShowLoaded { .. }));
