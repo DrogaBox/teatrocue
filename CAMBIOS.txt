@@ -87,6 +87,27 @@ CORREGIDO
 14. El control remoto OSC respeta el Bloqueo de función
    Con Ctrl+L activo, por la red solo entran las paradas (/panic, /stop, /hardstop).
 
+15. Panic y "Parar todo" también callan los Carts y la escucha
+   Antes Esc, Esc Esc y "Parar todo" paraban solo las cues de la lista: un pad de Carts o la
+   escucha por auriculares (PFL) seguían sonando. Ahora cualquier parada general calla todo.
+
+16. Una cue bajada por una Fade vuelve a su nivel con el próximo GO
+   Si una Fade Cue llevaba una música a silencio, al volver a dispararla (volver atrás en el
+   ensayo, o la segunda función del día sin reabrir el show) sonaba muda o al nivel del fade.
+   Ahora cada GO arranca con los niveles propios de la cue.
+
+17. Borrar la cue a la que apunta una Fade ya no traba el guardado
+   La Fade quedaba apuntando a una cue que no existe y el show no se podía guardar (tampoco el
+   autoguardado). Ahora la Fade queda sin destino y se le elige uno nuevo en el Inspector.
+
+18. Salir pregunta antes de cortar
+   Ctrl+Q, Archivo > Salir o la X de la ventana preguntan si hay audio sonando, si está puesto
+   el Bloqueo de función o si hay cambios sin guardar.
+
+19. Placa que abre pero no suena
+   Si la interfaz se abre pero no pide audio, el motor ya no reintenta en silencio para
+   siempre: después de tres intentos aparece el cartel SIN AUDIO.
+
 
 AGRADECIMIENTOS
 ---------------

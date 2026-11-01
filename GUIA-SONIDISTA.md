@@ -6,7 +6,7 @@ Todo esto también está en el manual del programa (tecla **F1**).
 | Qué | Cómo |
 |---|---|
 | Disparar la cue en espera | **Espacio** o el botón GO |
-| Parar todo (suave / duro) | **Esc** / **Esc Esc** (dos veces seguidas). Esc y «Parar todo» funden en 1 s de fábrica (Opciones > Preferencias > Fundidos al parar); Esc Esc corta seco |
+| Parar todo (suave / duro) | **Esc** / **Esc Esc** (dos veces seguidas). Esc y «Parar todo» funden en 1 s de fábrica (Opciones > Preferencias > Fundidos al parar); Esc Esc corta seco. Todas las paradas generales callan también los pads de Carts y la escucha por auriculares |
 | Volumen de toda la sala | Deslizador **MASTER** (barra superior). Doble clic = 0 dB |
 | Pausar / reanudar todo | Botones «Pausar todo» / «Reanudar todo» |
 | Mover el playhead sin disparar | Flechas ↑ ↓ |
