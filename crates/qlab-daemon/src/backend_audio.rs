@@ -425,6 +425,9 @@ pub struct AudioBackend {
     /// Stream de la segunda placa (auriculares), si la hay.
     monitor_stream: Option<cpal::Stream>,
     info: BackendInfo,
+    /// Pruebas: simula la placa desenchufada (abrir falla).
+    #[cfg(test)]
+    unplugged: bool,
 }
 
 impl AudioBackend {
@@ -439,7 +442,15 @@ impl AudioBackend {
             alloc_check: cfg.rt_alloc_check,
             monitor_tap: cfg.separate_monitor_device().map(|_| FrameRing::new(MONITOR_BUS_CHANNELS, MONITOR_RING_FRAMES)),
         };
-        let mut backend = Self { cfg, parts, running: Running::Stopped, monitor_stream: None, info: BackendInfo::default() };
+        let mut backend = Self {
+            cfg,
+            parts,
+            running: Running::Stopped,
+            monitor_stream: None,
+            info: BackendInfo::default(),
+            #[cfg(test)]
+            unplugged: false,
+        };
         backend.open()?;
         Ok(backend)
     }
@@ -468,7 +479,21 @@ impl AudioBackend {
         self.monitor_stream = None;
     }
 
+    /// Pruebas: desenchufa (el stream se corta y la placa no vuelve a abrir) o vuelve a enchufar la placa.
+    #[cfg(test)]
+    pub(crate) fn set_unplugged_for_test(&mut self, unplugged: bool) {
+        self.unplugged = unplugged;
+        if unplugged {
+            self.stop();
+            self.parts.health.audio_device_lost.store(true, Ordering::Release);
+        }
+    }
+
     fn open(&mut self) -> Result<(), BackendError> {
+        #[cfg(test)]
+        if self.unplugged {
+            return Err(BackendError::NoDevice("la placa está desenchufada".into()));
+        }
         let h = &self.parts.health;
         h.audio_heartbeat_ns.store(self.parts.epoch.now_ns(), Ordering::Release);
         let (running, mut info) = match self.cfg.kind {
@@ -609,8 +634,15 @@ impl AudioBackend {
                 config,
                 move |data: &mut [f32], _| renderer.render(data),
                 move |err: cpal::Error| {
-                    if err.kind() == cpal::ErrorKind::Xrun {
-                        health_err.xruns.fetch_add(1, Ordering::Relaxed);
+                    match err.kind() {
+                        cpal::ErrorKind::Xrun => {
+                            health_err.xruns.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // La placa se fue: el hilo principal reabre la salida sin esperar al watchdog.
+                        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::HostUnavailable => {
+                            health_err.audio_device_lost.store(true, Ordering::Release);
+                        }
+                        _ => {}
                     }
                     eprintln!("[audio] error del stream: {err}");
                 },

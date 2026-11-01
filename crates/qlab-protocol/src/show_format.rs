@@ -405,20 +405,33 @@ impl ShowFile {
                 }
             }
         });
+        // Los pads de Carts solo guardan una ruta: si es relativa, también cuelga de la carpeta del show.
+        for pad in &mut self.carts.pads {
+            if !pad.path.is_empty() && !std::path::Path::new(&pad.path).is_absolute() {
+                pad.path = base.join(&pad.path).to_string_lossy().into_owned();
+            }
+        }
     }
 
     /// Escribe como relativos (con `/`) los archivos que cuelgan de la carpeta del show `base`.
     pub fn relativize_media_paths(&mut self, base: &std::path::Path) {
+        let relative = |path: &str| {
+            let rel = std::path::Path::new(path).strip_prefix(base).ok()?;
+            let rel = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+            (!rel.is_empty()).then_some(rel)
+        };
         self.walk_mut(|n| {
             let Some(t) = n.basics.file_target.as_mut() else { return };
-            if let Ok(rel) = std::path::Path::new(&t.absolute_path).strip_prefix(base) {
-                let rel = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-                if !rel.is_empty() {
-                    t.absolute_path = rel.clone();
-                    t.relative_path = Some(rel);
-                }
+            if let Some(rel) = relative(&t.absolute_path) {
+                t.absolute_path = rel.clone();
+                t.relative_path = Some(rel);
             }
         });
+        for pad in &mut self.carts.pads {
+            if let Some(rel) = relative(&pad.path) {
+                pad.path = rel;
+            }
+        }
     }
 
     pub fn cue_count(&self) -> usize {
@@ -592,6 +605,20 @@ mod tests {
         let mut out = show_with_file("/musica/otro.wav");
         out.relativize_media_paths(base);
         assert_eq!(target_of(&out), ("/musica/otro.wav".to_string(), None));
+    }
+
+    #[test]
+    fn cart_pads_inside_the_show_folder_become_relative_and_resolve_back() {
+        let base = std::path::Path::new("/gira/acto1");
+        let mut s = show_with_file("/gira/acto1/audio/a.wav");
+        s.carts = crate::cue_dto::CartBank::default().clamped();
+        s.carts.pads[0].path = "/gira/acto1/audio/trueno.wav".into();
+        s.carts.pads[1].path = "/efectos/viento.wav".into();
+        s.relativize_media_paths(base);
+        assert_eq!((s.carts.pads[0].path.as_str(), s.carts.pads[1].path.as_str(), s.carts.pads[2].path.as_str()), ("audio/trueno.wav", "/efectos/viento.wav", ""));
+        s.resolve_media_paths(std::path::Path::new("/otra/maquina/acto1"));
+        assert_eq!(s.carts.pads[0].path, "/otra/maquina/acto1/audio/trueno.wav");
+        assert_eq!((s.carts.pads[1].path.as_str(), s.carts.pads[2].path.as_str()), ("/efectos/viento.wav", ""), "lo de afuera y los pads vacíos no se tocan");
     }
 
     #[test]

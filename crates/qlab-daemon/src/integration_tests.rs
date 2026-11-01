@@ -400,6 +400,47 @@ fn watchdog_restart_request_reopens_the_audio_stream() {
 }
 
 #[test]
+fn a_lost_card_is_reported_once_retried_and_recovered_when_it_comes_back() {
+    let mut f = simple("unplug", RingProducer::IpcServer);
+    let c = IpcClient::connect(&f.socket).unwrap();
+    req(&c, ClientRequest::Subscribe { events: true });
+    let health = std::sync::Arc::clone(f.daemon.health());
+    wait_until("callbacks", || health.audio_callbacks.load(Ordering::Relaxed) > 10);
+    let cues_before = match req(&c, ClientRequest::GetCues) {
+        ServerResponse::Cues { cues } => cues.len(),
+        other => panic!("{other:?}"),
+    };
+
+    // Se desenchufa la placa: el stream avisa, el reinicio falla y la interfaz recibe SIN AUDIO.
+    f.daemon.unplug_audio_for_test(true);
+    f.daemon.poll();
+    let ev = c.wait_event(TIMEOUT, |e| matches!(e, ServerEvent::AudioOutput { .. })).unwrap();
+    assert!(matches!(&ev, ServerEvent::AudioOutput { lost: true, message } if message.contains("desenchufada")), "{ev:?}");
+    assert!(health.audio_down.load(Ordering::Acquire));
+    // Mientras no vuelve se sigue intentando en silencio; el show y la lista quedan como estaban.
+    for _ in 0..10 {
+        f.daemon.poll();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    match req(&c, ClientRequest::GetCues) {
+        ServerResponse::Cues { cues } => assert_eq!(cues.len(), cues_before),
+        other => panic!("{other:?}"),
+    }
+
+    // Vuelve la placa: «Reintentar» la abre enseguida y, cuando el callback corre, la salida se da por recuperada.
+    f.daemon.unplug_audio_for_test(false);
+    assert_eq!(req(&c, ClientRequest::RetryAudio), ServerResponse::Ok);
+    wait_until("la salida vuelve", || {
+        f.daemon.poll();
+        !health.audio_down.load(Ordering::Acquire)
+    });
+    let ev = c.wait_event(TIMEOUT, |e| matches!(e, ServerEvent::AudioOutput { .. })).unwrap();
+    assert!(matches!(ev, ServerEvent::AudioOutput { lost: false, .. }), "{ev:?}");
+    let n = health.audio_callbacks.load(Ordering::Relaxed);
+    wait_until("el stream reabierto late", || health.audio_callbacks.load(Ordering::Relaxed) > n + 10);
+}
+
+#[test]
 fn a_frozen_sequencer_triggers_safe_mute_through_the_whole_stack() {
     let mut cfg = config("freeze");
     cfg.watchdog.timeout = Duration::from_millis(60);
@@ -720,7 +761,7 @@ fn bundling_copies_media_rewrites_relative_paths_and_the_bundle_opens_from_anywh
     std::fs::copy(write_wav("bundle-2", 2, 48_000, 48_000, |_, _| 0.2), &same_name_2).unwrap();
     let out = std::env::temp_dir().join(format!("qlab-bundle-out-{}", std::process::id()));
     let moved = std::env::temp_dir().join(format!("qlab-bundle-moved-{}", std::process::id()));
-    let _clean = Cleanup(vec![same_name_1.clone(), same_name_2.clone()]);
+    let _clean = Cleanup(vec![same_name_1.clone(), same_name_2.clone(), dir_b.join("trueno.wav")]);
 
     // Las cues 1 y 2 del show de prueba pasan a usar esos archivos (la 2 también la repite la 3, un tercer alta).
     for (id, file) in [(1u64, &same_name_1), (2, &same_name_2)] {
@@ -739,20 +780,27 @@ fn bundling_copies_media_rewrites_relative_paths_and_the_bundle_opens_from_anywh
     node.basics.file_target = Some(MediaTarget { absolute_path: same_name_1.to_string_lossy().into(), ..Default::default() });
     node.basics.armed = true;
     req(&c, ClientRequest::UpdateCue { node: Box::new(node) });
+    // Botonera de Carts: un pad con un efecto propio y otro con el mismo archivo de la cue 1.
+    let thunder = dir_b.join("trueno.wav");
+    std::fs::copy(write_wav("bundle-3", 2, 12_000, 48_000, |_, _| 0.3), &thunder).unwrap();
+    let mut bank = qlab_protocol::cue_dto::CartBank::default().clamped();
+    bank.pads[0].path = thunder.to_string_lossy().into();
+    bank.pads[1].path = same_name_1.to_string_lossy().into();
+    assert_eq!(req(&c, ClientRequest::SetCarts { bank }), ServerResponse::Ok);
 
     match req(&c, ClientRequest::BundleShow { dir: out.to_string_lossy().into(), name: "Gira: acto 1".into() }) {
         ServerResponse::ShowBundled { path, files, bytes, missing } => {
-            assert_eq!(files, 2, "el archivo repetido se copia una sola vez");
+            assert_eq!(files, 3, "el archivo repetido se copia una sola vez y el efecto del pad viaja también");
             assert!(bytes > 0 && missing.is_empty(), "{missing:?}");
             assert!(path.ends_with("Gira_ acto 1.teatroshow"), "{path}");
         }
         other => panic!("{other:?}"),
     }
     let names: std::collections::BTreeSet<String> = std::fs::read_dir(out.join("audio")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    assert_eq!(names, ["pista-2.wav".to_string(), "pista.wav".to_string()].into_iter().collect(), "los nombres iguales no se pisan");
+    assert_eq!(names, ["pista-2.wav", "pista.wav", "trueno.wav"].into_iter().map(String::from).collect(), "los nombres iguales no se pisan");
     let json = std::fs::read_to_string(out.join("Gira_ acto 1.teatroshow")).unwrap();
     assert!(!json.contains(&out.to_string_lossy().to_string()) && !json.contains(&dir_a.to_string_lossy().to_string()), "no quedan rutas absolutas");
-    assert!(json.contains("audio/pista.wav") && json.contains("audio/pista-2.wav"));
+    assert!(json.contains("audio/pista.wav") && json.contains("audio/pista-2.wav") && json.contains("audio/trueno.wav"));
 
     // La carpeta se puede mover y el show sigue abriendo sus archivos desde su nueva ubicación.
     std::fs::rename(&out, &moved).unwrap();
@@ -765,6 +813,13 @@ fn bundling_copies_media_rewrites_relative_paths_and_the_bundle_opens_from_anywh
         ServerResponse::CueDetail { node, .. } => {
             let t = node.basics.file_target.unwrap();
             assert_eq!(t.absolute_path, moved.join("audio/pista.wav").to_string_lossy());
+        }
+        other => panic!("{other:?}"),
+    }
+    match req(&c, ClientRequest::GetCarts) {
+        ServerResponse::Carts { bank } => {
+            assert_eq!(bank.pads[0].path, moved.join("audio/trueno.wav").to_string_lossy(), "el pad encuentra su efecto en el paquete");
+            assert_eq!(bank.pads[1].path, moved.join("audio/pista.wav").to_string_lossy());
         }
         other => panic!("{other:?}"),
     }
@@ -925,6 +980,61 @@ fn osc_over_udp_fires_go_and_a_cue_by_number_and_ignores_garbage() {
     send("/panic");
     wait_until("el panic por OSC detiene todo", || running(&c).is_empty());
     assert_eq!(req(&c, ClientRequest::Ping { nonce: 5 }), ServerResponse::Pong { nonce: 5 }, "la basura no tumbó nada");
+}
+
+#[test]
+fn with_the_show_lock_osc_only_lets_the_stops_through() {
+    let tag = "osc-lock";
+    let a = write_wav(&format!("{tag}-a"), 2, 480_000, 48_000, |_, _| 0.5);
+    let b = write_wav(&format!("{tag}-b"), 2, 480_000, 48_000, |_, _| 0.25);
+    let show = write_show(tag, vec![audio_node(1, Some(&a), false), audio_node(2, Some(&b), false)]);
+    let _cleanup = Cleanup(vec![a, b, show.clone()]);
+    let mut cfg = config(tag);
+    cfg.show = Some(show);
+    cfg.osc_port = Some(0);
+    let socket = cfg.socket.clone();
+    let daemon = Daemon::start(cfg).expect("el daemon debe arrancar");
+    let port = daemon.osc_port().expect("OSC activo");
+    let c = IpcClient::connect(&socket).unwrap();
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let send = |addr: &str| {
+        let mut v = addr.as_bytes().to_vec();
+        v.push(0);
+        while v.len() % 4 != 0 {
+            v.push(0);
+        }
+        v.extend(b",\0\0\0");
+        udp.send_to(&v, ("127.0.0.1", port)).unwrap();
+    };
+    let status = |c: &IpcClient| match req(c, ClientRequest::GetStatus) {
+        ServerResponse::Status(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(req(&c, ClientRequest::SetShowLock { on: true }), ServerResponse::Ok);
+    // El GO de la consola sigue andando; el de la red no.
+    assert_eq!(req(&c, ClientRequest::Go), ServerResponse::Ok);
+    wait_until("la cue 1 suena por el GO local", || status(&c).running.iter().any(|r| r.id == 1));
+    assert_eq!(status(&c).playhead, Some(2));
+    for ignored in ["/go", "/prev", "/cue/2/start", "/cue/1/pause", "/master"] {
+        send(ignored);
+    }
+    // Los paquetes se atienden en orden: cuando /stop hizo efecto, los anteriores ya se descartaron.
+    send("/stop");
+    wait_until("/stop entra con el Bloqueo", || status(&c).running.is_empty());
+    assert_eq!(status(&c).playhead, Some(2), "ni /go ni /prev movieron el playhead");
+    assert!(matches!(req(&c, ClientRequest::GetCues), ServerResponse::Cues { cues } if cues.iter().all(|q| q.state != "Running" && q.state != "Paused")));
+    assert_eq!(req(&c, ClientRequest::Go), ServerResponse::Ok);
+    wait_until("la cue 2 suena", || status(&c).running.iter().any(|r| r.id == 2));
+    send("/panic");
+    wait_until("/panic entra con el Bloqueo", || status(&c).running.is_empty());
+    // Sin Bloqueo vuelve a entrar todo.
+    assert_eq!(req(&c, ClientRequest::SetShowLock { on: false }), ServerResponse::Ok);
+    send("/prev");
+    wait_until("sin Bloqueo /prev mueve el playhead", || status(&c).playhead == Some(2));
+    send("/cue/1/start");
+    wait_until("sin Bloqueo la cue 1 arranca por OSC", || status(&c).running.iter().any(|r| r.id == 1));
+    send("/hardstop");
+    wait_until("la parada dura detiene todo", || status(&c).running.is_empty());
 }
 
 #[test]

@@ -351,6 +351,8 @@ pub struct QlabApp {
     follow_playhead: bool,
     scroll_to_selected: bool,
     pub safe_mute: bool,
+    /// La salida de audio del motor está caída: motivo que muestra el cartel SIN AUDIO.
+    pub audio_lost: Option<String>,
     panic_at: Option<Instant>,
     /// Tras mover el playhead localmente, se ignora la telemetría un instante (aún trae el valor viejo).
     local_playhead_until: Option<Instant>,
@@ -458,6 +460,7 @@ impl QlabApp {
             follow_playhead: false,
             scroll_to_selected: false,
             safe_mute: false,
+            audio_lost: None,
             panic_at: None,
             local_playhead_until: None,
             down_since: None,
@@ -534,6 +537,7 @@ impl QlabApp {
                     self.toast(ToastKind::Info, format!("Conectado · {} · {} Hz · {} canales", hello.backend, hello.sample_rate, hello.channels));
                     self.conn = ConnState::Connected(hello);
                     self.shm = shm;
+                    self.audio_lost = None;
                     self.telemetry = Telemetry::default();
                     self.down_since = None;
                     self.pending.clear();
@@ -542,6 +546,7 @@ impl QlabApp {
                     self.request_carts();
                     self.link.fire(ClientRequest::SetMasterDb { db: self.master_db });
                     self.send_stop_fades();
+                    self.link.fire(ClientRequest::SetShowLock { on: self.locked });
                     if let Some(path) = self.reload_show_after_connect.take() {
                         self.load_show_path(path);
                     }
@@ -963,6 +968,14 @@ impl QlabApp {
                 self.safe_mute = engaged;
                 self.toast(if engaged { ToastKind::Error } else { ToastKind::Info }, if engaged { "SAFE MUTE: el secuenciador se congeló" } else { "Safe mute liberado" });
             }
+            ServerEvent::AudioOutput { lost, message } => {
+                if lost {
+                    self.audio_lost = Some(message);
+                } else {
+                    self.audio_lost = None;
+                    self.toast(ToastKind::Info, format!("Audio recuperado: {message}"));
+                }
+            }
             ServerEvent::ShuttingDown => self.toast(ToastKind::Warn, "El daemon se está apagando"),
         }
     }
@@ -1052,6 +1065,7 @@ impl QlabApp {
             self.pending_resume = None;
             self.restore_resume_points();
         }
+        self.link.fire(ClientRequest::SetShowLock { on: self.locked });
         self.hud(if self.locked { "Bloqueo de función: ACTIVADO" } else { "Bloqueo de función: desactivado" });
     }
 
@@ -1138,6 +1152,8 @@ impl QlabApp {
             Action::CycleContinue(id) => self.cycle_continue(id),
             Action::MoveSelected(delta) => self.move_selected(delta),
             Action::RetryConnection => self.link.retry_now(),
+            Action::RetryAudio => self.link.fire(ClientRequest::RetryAudio),
+            Action::ChooseAudioOutput => self.audio_ui.open_with(&self.cfg.audio),
             Action::StartEmbedded { with_audio } => self.start_embedded(with_audio),
             Action::LaunchDaemonProcess => match standalone::launch_daemon_process(&self.cfg.socket, &self.cfg.audio) {
                 Ok(()) => {
@@ -2120,6 +2136,11 @@ impl QlabApp {
     #[cfg(test)]
     pub(crate) fn news_open_for_test(&self) -> bool {
         self.help.news_open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn server_event_for_test(&mut self, e: ServerEvent) {
+        self.on_server_event(e);
     }
 
     #[cfg(test)]
@@ -3228,6 +3249,30 @@ impl QlabApp {
         });
     }
 
+    /// Cartel rojo arriba de todo mientras el motor no tiene por dónde sonar. El show y la lista no se tocan: el motor
+    /// reintenta solo y el operador puede forzar el intento o elegir otra salida (el jack de la notebook, otra placa).
+    fn audio_lost_banner(ui: &mut egui::Ui, reason: &str, actions: &mut Vec<Action>) {
+        egui::Frame::new().fill(theme::RED_DARK).stroke(egui::Stroke::new(1.5, theme::RED)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SIN AUDIO").size(22.0).strong().color(Color32::WHITE));
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Se perdió la placa de audio. El motor la vuelve a buscar cada 2 segundos.").color(Color32::WHITE));
+                    ui.label(RichText::new(reason).small().color(Color32::from_gray(220)));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Elegir otra salida…").on_hover_text("Configuración de audio: otra placa o el jack de la computadora").clicked() {
+                        actions.push(Action::ChooseAudioOutput);
+                    }
+                    if ui.button("Reintentar").clicked() {
+                        actions.push(Action::RetryAudio);
+                    }
+                });
+            });
+        });
+    }
+
     fn show_main(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, _ctx: &egui::Context) {
         let hello = match &self.conn {
             ConnState::Connected(h) => Some(h.clone()),
@@ -3235,6 +3280,9 @@ impl QlabApp {
         };
         let view = ViewCtx { model: &self.model, telemetry: &self.telemetry, hello: hello.as_ref(), safe_mute: self.safe_mute, master_db: self.master_db, scroll_to_selected: std::mem::take(&mut self.scroll_to_selected) };
 
+        if let Some(reason) = &self.audio_lost {
+            egui::Panel::top("sin_audio").show(ui, |ui| Self::audio_lost_banner(ui, reason, actions));
+        }
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("Archivo", |ui| {

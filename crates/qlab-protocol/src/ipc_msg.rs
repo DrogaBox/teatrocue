@@ -43,6 +43,10 @@ pub enum ClientRequest {
     SetMasterDb { db: f32 },
     /// Fundidos globales: «Parar todo» (y Stop de control) y Panic, en segundos (0 a 30). La parada dura no cambia.
     SetStopFades { stop_secs: f32, panic_secs: f32 },
+    /// Bloqueo de función de la interfaz: mientras está activo, el control remoto OSC solo acepta paradas.
+    SetShowLock { on: bool },
+    /// Volver a abrir la salida de audio ya, sin esperar el próximo reintento («Reintentar» del cartel SIN AUDIO).
+    RetryAudio,
     /// Corte rápido de una cue (5 ms, sin su fundido de salida): para relanzarla desde una memoria.
     CutCue { cue_id: u64 },
     /// Acción sobre una cue concreta (Stop, Pause, Resume, Devamp, Load, Arm, Disarm, Go to).
@@ -241,6 +245,8 @@ pub enum ServerEvent {
     /// Aviso de salud: `source` = `audio`, `sequencer`, `engine`, `show`…
     Warning { source: String, message: String },
     SafeMute { engaged: bool },
+    /// La salida de audio se cayó (`lost`) o volvió. `message`: por qué no abre, o la placa con la que volvió.
+    AudioOutput { lost: bool, message: String },
     ShowLoaded { name: String },
     /// Cambió algún dato editable de la cue (nombre, tiempos, niveles…).
     CueUpdated { cue: u64 },

@@ -3168,3 +3168,33 @@ fn dragging_an_equalizer_point_sends_the_change_while_the_mouse_is_still_down_so
         f.h.step();
     }
 }
+
+#[test]
+fn the_no_audio_banner_offers_retry_and_another_output_and_goes_away_when_audio_returns() {
+    use qlab_protocol::ipc_msg::ServerEvent;
+    let mut f = fixture("sin-audio");
+    assert!(f.h.query_by_label("SIN AUDIO").is_none());
+    app_mut(&mut f.h).server_event_for_test(ServerEvent::AudioOutput { lost: true, message: "sin dispositivo de salida: `Focusrite` no existe".into() });
+    pump(&mut f.h, "cartel", |a| a.audio_lost.is_some());
+    f.h.step();
+    assert!(f.h.query_by_label("SIN AUDIO").is_some());
+    assert!(f.h.query_by_label("sin dispositivo de salida: `Focusrite` no existe").is_some(), "el motivo se lee en el cartel");
+    // «Reintentar» llega al motor.
+    let health = std::sync::Arc::clone(f._daemon.health());
+    f.h.get_by_label("Reintentar").click();
+    let t0 = Instant::now();
+    while !health.retry_audio.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(t0.elapsed() < WAIT, "el pedido de reintento no llegó al daemon");
+        f.h.step();
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    // «Elegir otra salida…» abre la configuración de audio.
+    f.h.get_by_label("Elegir otra salida…").click();
+    pump(&mut f.h, "configuración de audio", |a| a.audio_ui.open);
+    app_mut(&mut f.h).audio_ui.open = false;
+    // Cuando vuelve el audio, el cartel se va.
+    app_mut(&mut f.h).server_event_for_test(ServerEvent::AudioOutput { lost: false, message: "Focusrite USB".into() });
+    pump(&mut f.h, "sin cartel", |a| a.audio_lost.is_none());
+    f.h.step();
+    assert!(f.h.query_by_label("SIN AUDIO").is_none());
+}

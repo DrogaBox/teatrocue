@@ -88,6 +88,8 @@ pub struct IpcContext {
     audition_cue: Mutex<Option<u64>>,
     /// Botonera de Carts del show abierto (se guarda con él).
     carts: Mutex<qlab_protocol::cue_dto::CartBank>,
+    /// Bloqueo de función de la interfaz: el OSC de entrada solo deja pasar paradas.
+    show_lock: AtomicBool,
     next_list_id: std::sync::atomic::AtomicU64,
 }
 
@@ -118,6 +120,7 @@ impl IpcContext {
             adhoc: Mutex::new(Default::default()),
             audition_cue: Mutex::new(None),
             carts: Mutex::new(Default::default()),
+            show_lock: AtomicBool::new(false),
             ring_lock: Mutex::new(()),
             next_list_id: std::sync::atomic::AtomicU64::new(1),
         }
@@ -135,6 +138,11 @@ impl IpcContext {
         let setup = self.license.as_ref().ok_or("esta compilación no exige licencia: no hay nada que reactivar")?;
         let applied = setup.apply(key).map_err(|e| e.to_string())?;
         Ok(ServerResponse::LicenseExtended { valid_until: applied.valid_until, epoch: applied.epoch })
+    }
+
+    /// La interfaz tiene activo el Bloqueo de función.
+    pub fn show_locked(&self) -> bool {
+        self.show_lock.load(Ordering::Acquire)
     }
 
     fn send_seq(&self, cmd: SeqCommand) -> Result<(), String> {
@@ -375,9 +383,10 @@ impl IpcContext {
         Ok(ServerResponse::CueSheetExported { path: path.to_string_lossy().into_owned(), cues: show.cue_count() })
     }
 
-    /// Empaqueta el show en `dir`: copia cada archivo multimedia vinculado a `dir/audio/` (sin duplicar el que
-    /// usan varias cues, y renombrando si dos archivos distintos se llaman igual), reescribe sus rutas como
-    /// relativas y guarda `dir/<name>.json`. Los archivos que no existen se anotan y su ruta se deja como estaba.
+    /// Empaqueta el show en `dir`: copia cada archivo multimedia vinculado, de las cues y de los pads de Carts, a
+    /// `dir/audio/` (sin duplicar el que se usa varias veces, y renombrando si dos archivos distintos se llaman
+    /// igual), reescribe sus rutas como relativas y guarda `dir/<name>.json`. Los archivos que no existen se anotan
+    /// y su ruta se deja como estaba.
     pub fn bundle_show(&self, dir: &Path, name: &str) -> Result<ServerResponse, String> {
         let cues = self.ask(SeqCommand::ExportShow, SEQUENCER_TIMEOUT)?;
         let mut show = ShowFile { format: SHOW_FORMAT.into(), name: name.to_string(), sample_rate: self.timebase.sample_rate(), carts: self.carts.lock().expect("envenenado").clone(), cues };
@@ -388,6 +397,37 @@ impl IpcContext {
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let (mut files, mut bytes) = (0usize, 0u64);
         let (mut missing, mut errors) = (Vec::<String>::new(), Vec::<String>::new());
+        // Copia un archivo a `audio/` (una sola vez aunque lo usen varias cues o pads) y devuelve su ruta relativa.
+        let mut place = |src: &Path| -> String {
+            copied
+                .entry(src.to_path_buf())
+                .or_insert_with(|| {
+                    let file = src.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "media".into());
+                    let (stem, ext) = match file.rsplit_once('.') {
+                        Some((s, e)) => (s.to_string(), format!(".{e}")),
+                        None => (file.clone(), String::new()),
+                    };
+                    let mut candidate = file.clone();
+                    let mut k = 2;
+                    while !used.insert(candidate.to_lowercase()) {
+                        candidate = format!("{stem}-{k}{ext}");
+                        k += 1;
+                    }
+                    let dest = audio_dir.join(&candidate);
+                    let same = dest.canonicalize().ok().zip(src.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+                    if !same {
+                        match std::fs::copy(src, &dest) {
+                            Ok(n) => {
+                                files += 1;
+                                bytes += n;
+                            }
+                            Err(e) => errors.push(format!("{}: {e}", src.display())),
+                        }
+                    }
+                    format!("audio/{candidate}")
+                })
+                .clone()
+        };
         show.walk_mut(|n| {
             let Some(t) = n.basics.file_target.as_mut() else { return };
             if t.absolute_path.is_empty() {
@@ -398,34 +438,22 @@ impl IpcContext {
                 missing.push(t.absolute_path.clone());
                 return;
             }
-            let rel = copied.entry(src.clone()).or_insert_with(|| {
-                let file = src.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "media".into());
-                let (stem, ext) = match file.rsplit_once('.') {
-                    Some((s, e)) => (s.to_string(), format!(".{e}")),
-                    None => (file.clone(), String::new()),
-                };
-                let mut candidate = file.clone();
-                let mut k = 2;
-                while !used.insert(candidate.to_lowercase()) {
-                    candidate = format!("{stem}-{k}{ext}");
-                    k += 1;
-                }
-                let dest = audio_dir.join(&candidate);
-                let same = dest.canonicalize().ok().zip(src.canonicalize().ok()).is_some_and(|(a, b)| a == b);
-                if !same {
-                    match std::fs::copy(&src, &dest) {
-                        Ok(n) => {
-                            files += 1;
-                            bytes += n;
-                        }
-                        Err(e) => errors.push(format!("{}: {e}", src.display())),
-                    }
-                }
-                format!("audio/{candidate}")
-            });
+            let rel = place(&src);
             t.absolute_path = rel.clone();
-            t.relative_path = Some(rel.clone());
+            t.relative_path = Some(rel);
         });
+        // Los efectos de la botonera de Carts viajan en la misma carpeta.
+        for pad in &mut show.carts.pads {
+            if pad.path.is_empty() {
+                continue;
+            }
+            let src = std::path::PathBuf::from(&pad.path);
+            if !src.is_file() {
+                missing.push(pad.path.clone());
+                continue;
+            }
+            pad.path = place(&src);
+        }
         if let Some(e) = errors.first() {
             return Err(format!("no se pudo copiar {e}"));
         }
@@ -499,6 +527,14 @@ impl IpcContext {
                 // Un fundido de 0 s sigue siendo un corte sin clic (la rampa mínima de 5 ms de siempre).
                 let (stop_frames, panic_frames) = (frames(stop_secs).max(240), frames(panic_secs).max(240));
                 ok_or(self.send_seq(SeqCommand::SetStopFades { stop_frames, panic_frames }))
+            }
+            ClientRequest::RetryAudio => {
+                self.health.retry_audio.store(true, Ordering::Release);
+                ServerResponse::Ok
+            }
+            ClientRequest::SetShowLock { on } => {
+                self.show_lock.store(on, Ordering::Release);
+                ServerResponse::Ok
             }
             ClientRequest::SetMasterDb { db } => {
                 let x10 = if db.is_finite() { (db * 10.0).round().clamp(crate::health::MASTER_MUTE_X10 as f32, crate::health::MASTER_MAX_X10 as f32) as i32 } else { 0 };

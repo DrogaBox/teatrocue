@@ -68,6 +68,10 @@ pub enum Action {
     /// Sube (−1) o baja (+1) la cue seleccionada.
     MoveSelected(i32),
     RetryConnection,
+    /// Cartel SIN AUDIO: volver a abrir la placa ya.
+    RetryAudio,
+    /// Cartel SIN AUDIO: abrir la configuración de audio para elegir otra salida.
+    ChooseAudioOutput,
     StartEmbedded { with_audio: bool },
     LaunchDaemonProcess,
     Quit,

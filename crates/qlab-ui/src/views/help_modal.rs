@@ -160,9 +160,11 @@ fn scene_tab(ui: &mut Ui) {
     heading(ui, "Cue OSC (enviar a otro equipo)");
     para(ui, "«+ OSC Cue» envía un mensaje OSC por UDP al dispararse: indique el destino (equipo:puerto, p. ej. la consola de luces) y el mensaje (/direccion 3 0.5 \"texto\"). Si el destino no responde o es inválido, avisa pero no detiene el show.");
     heading(ui, "Control remoto OSC");
-    para(ui, "En Ver > Configuración de audio se puede activar un puerto UDP (53000 por defecto) para controlar TeatroCue desde otro equipo con OSC (TouchOSC, Companion, un Stream Deck…): /go, /panic, /stop, /pause, /resume, /next, /prev y /cue/<número>/start, stop, pause, resume, devamp, load, arm o disarm. Está apagado salvo que lo active, porque cualquiera en la red que conozca el puerto puede disparar la función.");
+    para(ui, "En Ver > Configuración de audio se puede activar un puerto UDP (53000 por defecto) para controlar TeatroCue desde otro equipo con OSC (TouchOSC, Companion, un Stream Deck…): /go, /panic, /stop, /pause, /resume, /next, /prev y /cue/<número>/start, stop, pause, resume, devamp, load, arm o disarm. Está apagado salvo que lo active, porque cualquiera en la red que conozca el puerto puede disparar la función. Con el Bloqueo de función (Ctrl+L) activo solo entran las paradas: /panic, /stop y /hardstop.");
     heading(ui, "Configuración de audio");
     para(ui, "Ver > Configuración de audio…: elige la interfaz de sonido, los canales de salida, el buffer y la frecuencia. Se guarda en esta PC y se usa en cada arranque. Al aplicar, el motor se reinicia (se corta lo que suene) y el show abierto se recarga solo; con un buffer menor baja la latencia pero hay más riesgo de cortes.");
+    heading(ui, "Si se pierde la placa de audio");
+    para(ui, "Si se desenchufa la interfaz o Windows la cambia, el motor la vuelve a abrir solo. Si no puede, aparece arriba de todo un cartel rojo SIN AUDIO con el motivo y el motor la sigue buscando cada 2 segundos; el cartel se va solo cuando vuelve a sonar. «Reintentar» prueba en el acto y «Elegir otra salida…» abre esta configuración para pasar a otra placa o al jack de la computadora. El show y la lista no se tocan.");
     heading(ui, "Vídeo esclavo del audio");
     para(ui, "Una cue de vídeo suena por su pista de audio y la imagen sigue al audio, no al revés: si la pantalla se atrasa, se descartan cuadros para no desfasar la música. «Proyección» abre la ventana para el proyector: arrástrala al monitor correcto y pulsa F.");
 }

@@ -4,9 +4,11 @@
 //! * [`sequencer_thread`]: el `Scheduler` de `qlab-core` a 1 kHz.
 //! * [`ipc_server`] y [`shm`]: socket local y memoria compartida con la UI.
 //! * [`watchdog`]: vigilancia de 250 ms con safe mute y reinicio del stream.
+//! * [`audio_recovery`]: reintentos cuando se pierde la placa de audio.
 //! * [`daemon`]: orquesta el ciclo de vida. `src/main.rs` es solo la línea de órdenes y las señales.
 
 pub mod adhoc;
+pub mod audio_recovery;
 pub mod backend_audio;
 pub mod config;
 pub mod daemon;

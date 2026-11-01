@@ -87,6 +87,16 @@ pub struct Health {
     pub sequencer_stalled: AtomicBool,
     /// El watchdog pide al hilo principal reiniciar el stream de audio.
     pub restart_audio: AtomicBool,
+    /// El watchdog agotó sus reinicios sin que el callback volviera a latir.
+    pub audio_gave_up: AtomicBool,
+
+    // -- Placa perdida --
+    /// El stream avisó que el dispositivo ya no está (se desenchufó o Windows lo invalidó).
+    pub audio_device_lost: AtomicBool,
+    /// «Reintentar» desde la interfaz.
+    pub retry_audio: AtomicBool,
+    /// La salida está caída y el motor no suena por ningún lado («SIN AUDIO»).
+    pub audio_down: AtomicBool,
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 //!
 //! Es opcional (`--osc-port`) porque cualquiera en la red que conozca el puerto puede disparar la función.
 //! Direcciones: `/go`, `/panic`, `/stop`, `/pause`, `/resume`, `/hardstop`, `/next`, `/prev`, `/cue/<número o id>/start` y por cue `/cue/<n>/stop`, `pause`, `resume`, `devamp`, `load`, `arm`, `disarm`.
+//! Con el Bloqueo de función de la interfaz activo solo se aceptan `/panic`, `/stop` y `/hardstop`.
 
 use std::io;
 use std::net::UdpSocket;
@@ -148,9 +149,18 @@ pub fn route(m: &OscMessage) -> Option<Action> {
     }
 }
 
-/// Ejecuta un mensaje contra el daemon. Devuelve `false` si no se entendió.
+/// Lo que entra por la red con el Bloqueo de función activo: solo las paradas generales.
+pub fn allowed_under_lock(a: &Action) -> bool {
+    matches!(a, Action::Request(ClientRequest::Panic | ClientRequest::StopAll | ClientRequest::HardStopAll))
+}
+
+/// Ejecuta un mensaje contra el daemon. Devuelve `false` si no se entendió o si el Bloqueo de función lo descarta.
 pub fn apply(ctx: &IpcContext, m: &OscMessage) -> bool {
-    match route(m) {
+    let action = route(m);
+    if ctx.show_locked() && !action.as_ref().is_some_and(allowed_under_lock) {
+        return false;
+    }
+    match action {
         Some(Action::Request(r)) => {
             ctx.handle(r);
             true
@@ -396,6 +406,17 @@ mod tests {
             assert_eq!(r(bad), None, "{bad}");
         }
     }
+    #[test]
+    fn under_the_show_lock_only_the_general_stops_pass() {
+        let r = |a: &str| route(&OscMessage { addr: a.into(), args: vec![OscArg::Float(0.0)] }).expect(a);
+        for ok in ["/panic", "/stop", "/hardstop"] {
+            assert!(allowed_under_lock(&r(ok)), "{ok}");
+        }
+        for blocked in ["/go", "/pause", "/resume", "/master", "/next", "/prev", "/cue/1/start", "/cue/1/stop", "/cue/1/load", "/cue/1/arm"] {
+            assert!(!allowed_under_lock(&r(blocked)), "{blocked}");
+        }
+    }
+
     #[test]
     fn stepping_the_playhead_stays_inside_the_list() {
         let top = [10, 20, 30];

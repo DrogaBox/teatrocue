@@ -246,13 +246,21 @@ impl Drop for WatchdogHandle {
 fn apply(event: &WatchdogEvent, health: &Health, events: &EventHub) {
     let warn = |source: &str, message: String| {
         eprintln!("[watchdog] {message}");
-        events.publish(ServerEvent::Warning { source: source.into(), message });
+        // Con la salida caída la interfaz ya muestra SIN AUDIO: los avisos de cada reintento solo serían ruido.
+        if !(source == "audio" && health.audio_down.load(Ordering::Acquire)) {
+            events.publish(ServerEvent::Warning { source: source.into(), message });
+        }
     };
     match event {
         WatchdogEvent::Stalled { who, age_ms } => {
             warn(who.name(), format!("{} sin latido desde hace {age_ms} ms", who.name()));
         }
-        WatchdogEvent::Recovered { who } => warn(who.name(), format!("{} recuperado", who.name())),
+        WatchdogEvent::Recovered { who } => {
+            if *who == Subsystem::Audio {
+                health.audio_gave_up.store(false, Ordering::Release);
+            }
+            warn(who.name(), format!("{} recuperado", who.name()))
+        }
         WatchdogEvent::SafeMuteEngaged => {
             health.safe_mute.store(true, Ordering::Release);
             events.publish(ServerEvent::SafeMute { engaged: true });
@@ -267,7 +275,10 @@ fn apply(event: &WatchdogEvent, health: &Health, events: &EventHub) {
             health.restart_audio.store(true, Ordering::Release);
             warn("audio", format!("reiniciando el stream de audio (intento {attempt})"));
         }
-        WatchdogEvent::GaveUp => warn("audio", "el stream de audio no se recupera tras varios reinicios".into()),
+        WatchdogEvent::GaveUp => {
+            health.audio_gave_up.store(true, Ordering::Release);
+            warn("audio", "el stream de audio no se recupera tras varios reinicios".into())
+        }
     }
 }
 

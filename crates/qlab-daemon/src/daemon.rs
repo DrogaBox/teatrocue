@@ -16,6 +16,7 @@ use qlab_protocol::ipc_msg::ServerEvent;
 use ringbuf::traits::Split;
 use ringbuf::HeapRb;
 
+use crate::audio_recovery::{AudioRecovery, Change, Observed};
 use crate::backend_audio::{AudioBackend, BackendError, BackendInfo, RtAudioContext};
 use crate::config::{AllocCheck, DaemonConfig};
 use crate::events::EventHub;
@@ -68,6 +69,9 @@ pub struct Daemon {
     watchdog: WatchdogHandle,
     ipc: IpcServer,
     osc: Option<crate::osc::OscServer>,
+    /// Reintentos de la salida de audio cuando se pierde la placa.
+    recovery: AudioRecovery,
+    epoch: Epoch,
     shutdown: Arc<AtomicBool>,
     stopped: bool,
 }
@@ -175,6 +179,8 @@ impl Daemon {
             watchdog,
             ipc,
             osc,
+            recovery: AudioRecovery::new(),
+            epoch,
             shutdown,
             stopped: false,
         };
@@ -236,17 +242,54 @@ impl Daemon {
         Arc::clone(&self.shutdown)
     }
 
-    /// Una vuelta del hilo principal: reinicia el stream si el watchdog lo pidió.
+    /// Una vuelta del hilo principal: reinicia el stream si el watchdog, el propio stream (placa perdida) o la
+    /// interfaz lo pidieron y, con la salida caída, lo vuelve a intentar cada [`crate::audio_recovery::RETRY_EVERY`].
     pub fn poll(&mut self) {
-        if self.health.restart_audio.swap(false, Ordering::AcqRel) {
-            match self.backend.restart() {
-                Ok(()) => log("stream de audio reiniciado"),
-                Err(e) => {
-                    log(format!("no se pudo reiniciar el stream de audio: {e}"));
-                    self.events.publish(ServerEvent::Warning { source: "audio".into(), message: format!("reinicio fallido: {e}") });
-                }
-            }
+        let h = &self.health;
+        // `|` y no `||`: cada pedido se consume aunque otro ya obligue a reiniciar.
+        let requested = h.restart_audio.swap(false, Ordering::AcqRel) | h.audio_device_lost.swap(false, Ordering::AcqRel) | h.retry_audio.swap(false, Ordering::AcqRel);
+        let observed = Observed {
+            now_ns: self.epoch.now_ns(),
+            restart_requested: requested,
+            running: self.backend.is_running(),
+            watchdog_gave_up: h.audio_gave_up.load(Ordering::Acquire),
+            callbacks: h.audio_callbacks.load(Ordering::Acquire),
+        };
+        let (restart, change) = self.recovery.observe(observed);
+        if let Some(change) = change {
+            self.publish_audio_output(change, "la placa de audio no responde".into());
         }
+        if !restart {
+            return;
+        }
+        let was_down = self.recovery.is_down();
+        self.health.audio_gave_up.store(false, Ordering::Release);
+        let result = self.backend.restart();
+        let callbacks = self.health.audio_callbacks.load(Ordering::Acquire);
+        let change = self.recovery.restarted(result.is_ok(), self.epoch.now_ns(), callbacks);
+        match &result {
+            Ok(()) => log(format!("stream de audio reiniciado en {}", self.backend.info().device)),
+            // Con la salida caída cada reintento fallido iría al registro: basta con el primero.
+            Err(e) if !was_down => log(format!("no se pudo reiniciar el stream de audio: {e}")),
+            Err(_) => {}
+        }
+        if let (Some(change), Err(e)) = (change, &result) {
+            self.publish_audio_output(change, e.to_string());
+        }
+    }
+
+    fn publish_audio_output(&self, change: Change, reason: String) {
+        let lost = change == Change::Lost;
+        self.health.audio_down.store(lost, Ordering::Release);
+        let message = if lost { reason } else { self.backend.info().device.clone() };
+        log(if lost { format!("SIN AUDIO: {message}") } else { format!("audio recuperado: {message}") });
+        self.events.publish(ServerEvent::AudioOutput { lost, message });
+    }
+
+    /// Solo para pruebas: desenchufa (o vuelve a enchufar) la placa de audio.
+    #[cfg(test)]
+    pub(crate) fn unplug_audio_for_test(&mut self, unplugged: bool) {
+        self.backend.set_unplugged_for_test(unplugged);
     }
 
     /// Bucle del hilo principal hasta que se pida el apagado.
