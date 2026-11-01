@@ -694,14 +694,34 @@ impl IpcServer {
     /// socket huérfano de un daemon anterior se reemplaza.
     pub fn start(path: &str, ctx: Arc<IpcContext>) -> io::Result<Self> {
         let name = socket_name(path)?;
-        if Stream::connect(name.clone()).is_ok() {
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("ya hay un daemon escuchando en {path}")));
-        }
+        // En Windows no se prueba conectando: si la tubería todavía tiene instancias ocupadas (un cliente del daemon
+        // anterior que aún no cerró), conectar espera a que se libere una y el arranque se colgaba. Crear la tubería
+        // falla igual si otro daemon la está atendiendo.
         #[cfg(unix)]
-        if Path::new(path).exists() {
-            let _ = std::fs::remove_file(path);
+        {
+            if Stream::connect(name.clone()).is_ok() {
+                return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("ya hay un daemon escuchando en {path}")));
+            }
+            if Path::new(path).exists() {
+                let _ = std::fs::remove_file(path);
+            }
         }
-        let listener = ListenerOptions::new().name(name).create_sync()?;
+        // Windows rechaza crear la primera instancia de una tubería que ya existe («acceso denegado»). La de un daemon
+        // recién parado sigue existiendo hasta que sus clientes cierran (la interfaz lo nota en un segundo y medio), así
+        // que se reintenta un rato antes de dar por ocupado el canal.
+        let deadline = std::time::Instant::now() + if cfg!(windows) { Duration::from_secs(5) } else { Duration::ZERO };
+        let listener = loop {
+            match ListenerOptions::new().name(name.clone()).create_sync() {
+                Ok(l) => break l,
+                Err(e) if cfg!(windows) && matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::AddrInUse) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("ya hay un daemon escuchando en {path}")));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => return Err(e),
+            }
+        };
         listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
         #[cfg(unix)]
         {

@@ -222,6 +222,10 @@ enum ActivePicker {
 pub struct QlabApp {
     cfg: AppConfig,
     link: DaemonLink,
+    /// Para volver a crear el enlace (su hilo despierta a la interfaz con esto).
+    egui_ctx: egui::Context,
+    /// Canal al que está conectado el enlace.
+    link_socket: String,
     pub conn: ConnState,
     pub model: UiModel,
     pub telemetry: Telemetry,
@@ -378,6 +382,8 @@ impl QlabApp {
         let repair_chan = std::sync::mpsc::channel();
         let mut app = Self {
             link,
+            egui_ctx: ctx.clone(),
+            link_socket: cfg.socket.clone(),
             conn: ConnState::Connecting,
             model: UiModel::default(),
             telemetry: Telemetry::default(),
@@ -1182,7 +1188,8 @@ impl QlabApp {
             Action::LaunchDaemonProcess => match standalone::launch_daemon_process(&self.cfg.socket, &self.cfg.audio) {
                 Ok(()) => {
                     self.engine_message = Some("Daemon lanzado; conectando…".into());
-                    self.link.retry_now();
+                    let socket = self.cfg.socket.clone();
+                    self.relink(socket);
                 }
                 Err(e) => self.engine_message = Some(format!("No se pudo lanzar el daemon: {e}")),
             },
@@ -2550,15 +2557,29 @@ impl QlabApp {
         }
     }
 
+    /// Conecta el enlace al canal `socket`: reintenta ya si es el mismo, o crea un enlace nuevo si cambió.
+    fn relink(&mut self, socket: String) {
+        if socket == self.link_socket {
+            self.link.retry_now();
+        } else {
+            let wake = self.egui_ctx.clone();
+            self.link = DaemonLink::spawn(socket.clone(), move || wake.request_repaint());
+            self.link_socket = socket;
+        }
+    }
+
     fn start_embedded(&mut self, with_audio: bool) {
         if self.embedded.as_ref().is_some_and(EmbeddedEngine::is_running) {
             return;
         }
-        match EmbeddedEngine::start(standalone::embedded_config(&self.cfg.socket, with_audio, &self.cfg.audio)) {
+        let cfg = standalone::embedded_config(&self.cfg.socket, with_audio, &self.cfg.audio);
+        let socket = cfg.socket.clone();
+        match EmbeddedEngine::start(cfg) {
             Ok(engine) => {
                 self.embedded = Some(engine);
                 self.engine_message = Some("Motor embebido en marcha; conectando…".into());
-                self.link.retry_now();
+                // En Windows un motor reiniciado atiende en otra tubería: el enlace se conecta a esa.
+                self.relink(socket);
             }
             Err(e) => self.engine_message = Some(format!("No se pudo iniciar el motor embebido: {e}")),
         }
@@ -3317,7 +3338,7 @@ impl QlabApp {
             views::reconnect::show(
                 ui,
                 &views::reconnect::ReconnectInfo {
-                    socket: &self.cfg.socket,
+                    socket: &self.link_socket,
                     reason: &reason,
                     connecting,
                     seconds_down: down,

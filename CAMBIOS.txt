@@ -124,6 +124,11 @@ CORREGIDO
    guardar con el bucle sonando: el bucle sigue y el archivo queda como corresponde. Lo que se
    edita mientras se guarda queda marcado como pendiente.
 
+23. Cambiar la placa en Configuración de audio ya no deja el programa sin motor
+   En Windows, "Aplicar y reiniciar motor" (y "Elegir otra salida..." del cartel SIN AUDIO)
+   apagaba el motor y no podía volver a arrancarlo: quedaba la pantalla "El daemon de audio
+   no está activo". Ahora el motor nuevo arranca y el programa se reconecta solo.
+
 
 AGRADECIMIENTOS
 ---------------

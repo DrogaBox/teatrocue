@@ -25,13 +25,25 @@ pub fn shm_name_for_socket(socket: &str) -> String {
     format!("teatrocue_rt_{hash:016x}")
 }
 
+/// Arranques del motor embebido en este proceso: cada uno usa su propia memoria compartida.
+static ENGINE_STARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 pub fn embedded_config(socket: &str, with_audio: bool, audio: &crate::settings::AudioSettings) -> DaemonConfig {
     let mut cfg = DaemonConfig::default();
     if with_audio {
         audio.apply_to(&mut cfg);
     }
     cfg.socket = socket.to_string();
-    cfg.shm_name = shm_name_for_socket(socket);
+    // En Windows el segmento del motor anterior sigue existiendo mientras alguien lo tenga abierto (la interfaz hasta
+    // que nota la desconexión), y reiniciar el motor con el mismo nombre fallaba: «Aplicar» en la configuración de
+    // audio dejaba el programa sin motor. Los clientes reciben el nombre en el saludo, así que puede cambiar.
+    let n = ENGINE_STARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cfg.shm_name = format!("{}_{}_{n}", shm_name_for_socket(socket), std::process::id());
+    // Lo mismo pasa con la tubería con nombre: la del motor parado queda tomada dentro de este proceso. Desde el segundo
+    // arranque cada motor usa la suya y la interfaz se conecta a esa (ver `QlabApp::start_embedded`).
+    if cfg!(windows) && n > 0 {
+        cfg.socket = format!("{socket}_{}_{n}", std::process::id());
+    }
     cfg.backend.kind = if with_audio { BackendKind::Cpal } else { BackendKind::Null };
     cfg.lock_memory = false;
     cfg
@@ -144,11 +156,14 @@ mod tests {
         assert_eq!(embedded_config("/tmp/x.sock", true, &Default::default()).backend.kind, BackendKind::Cpal);
         assert_eq!(embedded_config("/tmp/x.sock", false, &Default::default()).backend.kind, BackendKind::Null);
         assert_eq!(embedded_config("/tmp/x.sock", false, &Default::default()).socket, "/tmp/x.sock");
+        let (a, b) = (embedded_config("/tmp/x.sock", true, &Default::default()), embedded_config("/tmp/x.sock", true, &Default::default()));
+        assert_ne!(a.shm_name, b.shm_name, "cada arranque tiene su memoria compartida (en Windows la anterior puede seguir abierta)");
+        assert!(a.shm_name.starts_with(&shm_name_for_socket("/tmp/x.sock")));
     }
 
     #[test]
     fn the_embedded_engine_starts_serves_and_stops() {
-        let socket = format!("/tmp/qlab-ui-embedded-{}.sock", std::process::id());
+        let socket = crate::test_socket(&format!("qlab-ui-embedded-{}", std::process::id()));
         let cfg = embedded_config(&socket, false, &Default::default());
         let mut engine = EmbeddedEngine::start(cfg).expect("arranca");
         assert!(engine.is_running());
@@ -158,12 +173,46 @@ mod tests {
         drop(c);
         engine.stop();
         assert!(!engine.is_running());
+        // En Windows la tubería del motor parado queda tomada mientras viva el proceso (por eso cada arranque usa otra).
+        #[cfg(unix)]
         assert!(qlab_protocol::ipc_client::IpcClient::connect(&socket).is_err(), "el socket desaparece al parar");
+    }
+
+    /// Arranca el motor en otro hilo y falla si tarda más de 10 s (en vez de colgar la prueba).
+    fn start_within_10s(cfg: qlab_daemon::DaemonConfig) -> EmbeddedEngine {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(EmbeddedEngine::start(cfg));
+        });
+        rx.recv_timeout(Duration::from_secs(10)).expect("el motor no arrancó en 10 s").expect("arranca")
+    }
+
+    #[test]
+    fn the_embedded_engine_restarts_on_the_same_socket_even_with_a_client_still_connected() {
+        // Lo que hace «Aplicar» en la configuración de audio: parar el motor y arrancar otro en el mismo canal.
+        let socket = crate::test_socket(&format!("qlab-ui-embedded-restart-{}", std::process::id()));
+        let mut engine = start_within_10s(embedded_config(&socket, false, &Default::default()));
+        engine.stop();
+        let mut engine = start_within_10s(embedded_config(&socket, false, &Default::default()));
+        // La interfaz sigue conectada al motor anterior mientras se reinicia.
+        let c = qlab_protocol::ipc_client::IpcClient::connect(&socket).unwrap();
+        engine.stop();
+        let pending = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1_500));
+            drop(c);
+        });
+        let mut engine = start_within_10s(embedded_config(&socket, false, &Default::default()));
+        let _ = pending.join();
+        let c = qlab_protocol::ipc_client::IpcClient::connect(&socket).unwrap();
+        let r = c.request(qlab_protocol::ipc_msg::ClientRequest::Ping { nonce: 9 }, Duration::from_secs(2)).unwrap();
+        assert_eq!(r, qlab_protocol::ipc_msg::ServerResponse::Pong { nonce: 9 });
+        drop(c);
+        engine.stop();
     }
 
     #[test]
     fn a_failing_engine_reports_why_instead_of_hanging() {
-        let mut cfg = embedded_config("/tmp/qlab-ui-embedded-bad.sock", true, &Default::default());
+        let mut cfg = embedded_config(&crate::test_socket("qlab-ui-embedded-bad"), true, &Default::default());
         cfg.backend.host = Some("no-existe".into());
         cfg.shm_name = format!("qlab_ui_embedded_bad_{}", std::process::id());
         let err = EmbeddedEngine::start(cfg).err().expect("debe fallar");
