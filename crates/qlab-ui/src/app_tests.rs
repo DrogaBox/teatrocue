@@ -72,7 +72,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let socket = format!("/tmp/qlab-ui-app-{}.sock", unique(tag));
+        let socket = crate::test_socket(&format!("qlab-ui-app-{}", unique(tag)));
         let wav_short = write_test_wav(&format!("{tag}-s"), 2, 14_400, 48_000, |_, _| 0.5);
         let wav_loop = write_test_wav(&format!("{tag}-l"), 2, 48_000, 48_000, |_, _| 0.25);
         let show = std::env::temp_dir().join(format!("qlab-ui-show-{}.json", unique(tag)));
@@ -409,7 +409,7 @@ fn the_ui_survives_the_daemon_dying_and_reconnects_to_a_new_one() {
 
 #[test]
 fn standalone_mode_starts_the_embedded_engine_from_the_reconnect_screen() {
-    let socket = format!("/tmp/qlab-ui-standalone-{}.sock", std::process::id());
+    let socket = crate::test_socket(&format!("qlab-ui-standalone-{}", std::process::id()));
     let mut rig = Rig::bare(socket.clone());
     rig.pump_until("pantalla de reconexión", |a| matches!(a.conn, ConnState::Down { .. }));
     // Desde la pantalla de reconexión el usuario pide el motor embebido sin audio.

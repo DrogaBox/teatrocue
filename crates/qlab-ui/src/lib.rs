@@ -35,3 +35,13 @@ mod app_tests;
 
 #[cfg(test)]
 mod click_tests;
+
+/// Nombre del canal IPC de una prueba: tubería con nombre en Windows, socket en `/tmp` en el resto.
+#[cfg(test)]
+pub(crate) fn test_socket(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{name}")
+    } else {
+        format!("/tmp/{name}.sock")
+    }
+}

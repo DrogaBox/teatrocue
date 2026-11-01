@@ -437,7 +437,7 @@ mod tests {
     fn a_dead_socket_is_reported_once_and_retried() {
         let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let w = Arc::clone(&woke);
-        let link = DaemonLink::spawn(format!("/tmp/qlab-ui-test-missing-{}.sock", std::process::id()), move || {
+        let link = DaemonLink::spawn(crate::test_socket(&format!("qlab-ui-test-missing-{}", std::process::id())), move || {
             w.fetch_add(1, Ordering::Relaxed);
         });
         let t0 = Instant::now();
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn dropping_the_link_stops_the_thread_promptly() {
         let t0 = Instant::now();
-        drop(DaemonLink::spawn("/tmp/qlab-ui-test-drop.sock".into(), || {}));
+        drop(DaemonLink::spawn(crate::test_socket("qlab-ui-test-drop"), || {}));
         assert!(t0.elapsed() < Duration::from_millis(500), "{:?}", t0.elapsed());
     }
 }

@@ -82,7 +82,7 @@ fn fixture(tag: &str) -> Fixture {
 
 /// `vamp`: la cue 1 lleva un slice infinito desde 0,5 s (la pista dura 2 s).
 fn fixture_with(tag: &str, vamp: bool) -> Fixture {
-    let socket = format!("/tmp/qlab-ui-click-{}-{tag}.sock", std::process::id());
+    let socket = crate::test_socket(&format!("qlab-ui-click-{}-{tag}", std::process::id()));
     let wav = write_test_wav(&format!("click-{tag}"), 2, 96_000, 48_000, |_, _| 0.3);
     let show = std::env::temp_dir().join(format!("qlab-ui-click-{}-{tag}.json", std::process::id()));
     let mut first = node(1, &wav);
@@ -186,7 +186,7 @@ fn typing_in_the_name_field_saves_when_focus_leaves() {
 
 #[test]
 fn the_reconnect_screen_buttons_work() {
-    let socket = format!("/tmp/qlab-ui-click-reconnect-{}.sock", std::process::id());
+    let socket = crate::test_socket(&format!("qlab-ui-click-reconnect-{}", std::process::id()));
     let mut h = harness(AppConfig::new(socket));
     pump(&mut h, "pantalla de reconexión", |a| matches!(a.conn, crate::app::ConnState::Down { .. }));
     h.step();
@@ -598,7 +598,7 @@ fn adding_a_cue_to_an_empty_list_inserts_it_and_opens_the_inspector() {
 
 #[test]
 fn a_freshly_started_empty_daemon_accepts_the_first_cue() {
-    let socket = format!("/tmp/qlab-ui-click-{}-cold.sock", std::process::id());
+    let socket = crate::test_socket(&format!("qlab-ui-click-{}-cold", std::process::id()));
     let mut dc = DaemonConfig::default();
     dc.socket = socket.clone();
     dc.shm_name = format!("qlab_uiclick_{}_cold", std::process::id());
@@ -834,7 +834,7 @@ fn an_invalid_license_shows_only_the_lock_screen_with_the_machine_id() {
     use qlab_license::{LicenseError, MachineId, Status};
     let id = MachineId::from_guid("pc-sin-licencia");
     let status = Status { machine: Some(id.clone()), result: Err(LicenseError::NotFound("C:/TeatroCue/license.key".into())), path: "C:/TeatroCue/license.key".into(), now: 0, effective_expires_unix: 0 };
-    let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-lock.sock", std::process::id()));
+    let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-lock", std::process::id())));
     cfg.embedded_on_start = Some(false); // la pantalla de bloqueo impide incluso el motor embebido
     cfg.license = LicenseInfo::from_status(&status);
     let mut h = harness(cfg);
@@ -856,7 +856,7 @@ fn an_invalid_license_shows_only_the_lock_screen_with_the_machine_id() {
 #[test]
 fn a_valid_license_shows_the_normal_interface() {
     use crate::license_gate::{LicenseInfo, LicenseState};
-    let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-nolock.sock", std::process::id()));
+    let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-nolock", std::process::id())));
     cfg.license = LicenseInfo { state: LicenseState::Valid { licensee: "Ballet Oficial de Córdoba".into(), issued_unix: 1, expires_unix: 0, days_left: None }, machine_id: Some("AAAA-BBBB-CCCC-DDDD".into()), lock_text: None, reactivable: false };
     let mut h = harness(cfg);
     for _ in 0..4 {
@@ -971,7 +971,7 @@ impl Expired {
     }
 
     fn cfg(&self, tag: &str) -> AppConfig {
-        let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-{tag}.sock", std::process::id()));
+        let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-{tag}", std::process::id())));
         cfg.license = crate::license_gate::LicenseInfo::from_status(&self.setup.status());
         cfg.license_setup = Some(self.setup.clone());
         cfg
@@ -1041,7 +1041,7 @@ fn the_help_license_tab_has_the_reactivation_block_and_a_reused_key_is_rejected(
     let pc = Expired::new("help");
     // Licencia aún vigente en pantalla (a mitad de función) pero que vence pronto: el bloque está en Ayuda > Licencia.
     let early = qlab_license::activation::Setup { now: Some(pc.now - 20 * 86_400), ..pc.setup.clone() };
-    let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-react-help.sock", std::process::id()));
+    let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-react-help", std::process::id())));
     cfg.license = crate::license_gate::LicenseInfo::from_status(&early.status());
     cfg.license_setup = Some(early);
     assert!(!cfg.license.is_locked(), "a +20 días todavía vale: {:?}", cfg.license.state);
@@ -1076,7 +1076,7 @@ fn the_audio_settings_window_saves_the_choice_for_the_next_engine_start() {
     let dir = std::env::temp_dir().join(format!("teatrocue-ui-audio-{}", std::process::id()));
     let path = dir.join("audio.json");
     let _ = std::fs::remove_dir_all(&dir);
-    let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-audio.sock", std::process::id()));
+    let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-audio", std::process::id())));
     cfg.settings_path = Some(path.clone());
     cfg.embedded_on_start = Some(false); // motor sin audio: el cambio no debe reiniciarlo con la tarjeta real
     let mut h = harness(cfg);
@@ -2206,7 +2206,7 @@ fn the_giant_clock_counts_down_the_running_track_and_is_dashed_when_idle() {
 
 #[test]
 fn the_headphone_selector_offers_channel_pairs_only_with_four_channels_and_any_other_system_output() {
-    let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-click-{}-phones.sock", std::process::id()));
+    let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-click-{}-phones", std::process::id())));
     cfg.embedded_on_start = Some(false);
     let mut h = harness(cfg);
     pump(&mut h, "motor conectado", |a| a.is_connected());
@@ -2754,7 +2754,7 @@ fn the_news_window_opens_on_the_first_run_of_a_new_version_only_once_and_again_a
     let _ = std::fs::remove_dir_all(&dir);
     let settings = dir.join("audio.json");
     let open_app = || {
-        let mut cfg = AppConfig::new(format!("/tmp/qlab-ui-news-{}.sock", std::process::id()));
+        let mut cfg = AppConfig::new(crate::test_socket(&format!("qlab-ui-news-{}", std::process::id())));
         cfg.settings_path = Some(settings.clone());
         let mut h = harness(cfg);
         for _ in 0..4 {
