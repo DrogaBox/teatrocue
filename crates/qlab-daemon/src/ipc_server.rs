@@ -140,6 +140,18 @@ impl IpcContext {
         Ok(ServerResponse::LicenseExtended { valid_until: applied.valid_until, epoch: applied.epoch })
     }
 
+    /// Detiene todos los reproductores independientes (pads de Carts y audición). Intenta con todos aunque uno falle.
+    fn stop_all_adhoc(&self) -> Result<(), String> {
+        let slots: Vec<u32> = self.adhoc.lock().expect("envenenado").keys().copied().collect();
+        let mut first_error = None;
+        for s in slots {
+            if let Err(e) = self.adhoc_stop(s) {
+                first_error.get_or_insert(e);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// La interfaz tiene activo el Bloqueo de función.
     pub fn show_locked(&self) -> bool {
         self.show_lock.load(Ordering::Acquire)
@@ -489,9 +501,10 @@ impl IpcContext {
             }
             ClientRequest::Ping { nonce } => ServerResponse::Pong { nonce },
             ClientRequest::Go => ok_or(self.hot(HotControlEvent::Go)),
-            ClientRequest::Panic => ok_or(self.hot(HotControlEvent::Panic)),
-            ClientRequest::StopAll => ok_or(self.hot(HotControlEvent::StopAll)),
-            ClientRequest::HardStopAll => ok_or(self.send_seq(SeqCommand::Control(Control::HardStopAll))),
+            // Las paradas generales también callan los pads de Carts y la audición: «Panic» es silencio total.
+            ClientRequest::Panic => ok_or(self.hot(HotControlEvent::Panic).and(self.stop_all_adhoc())),
+            ClientRequest::StopAll => ok_or(self.hot(HotControlEvent::StopAll).and(self.stop_all_adhoc())),
+            ClientRequest::HardStopAll => ok_or(self.send_seq(SeqCommand::Control(Control::HardStopAll)).and(self.stop_all_adhoc())),
             ClientRequest::PauseAll => ok_or(self.send_seq(SeqCommand::Control(Control::PauseAll))),
             ClientRequest::ResumeAll => ok_or(self.send_seq(SeqCommand::Control(Control::ResumeAll))),
             ClientRequest::FaderDrag { cue_id, row, col, db } => {
@@ -557,15 +570,7 @@ impl IpcContext {
             ClientRequest::AdhocStop { slot } => self.adhoc_stop(slot).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::Audition { cue_id, start_secs } => self.audition(cue_id, start_secs).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::AuditionStop => self.adhoc_stop(crate::adhoc::AUDITION_SLOT).unwrap_or_else(|message| ServerResponse::Error { message }),
-            ClientRequest::AdhocStopAll => {
-                let slots: Vec<u32> = self.adhoc.lock().expect("envenenado").keys().copied().collect();
-                for s in slots {
-                    if let Err(message) = self.adhoc_stop(s) {
-                        return ServerResponse::Error { message };
-                    }
-                }
-                ServerResponse::Ok
-            }
+            ClientRequest::AdhocStopAll => ok_or(self.stop_all_adhoc()),
             ClientRequest::ExportCueSheet { path, name, durations, generated } => self.export_cue_sheet(Path::new(&path), &name, &durations, &generated).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::BundleShow { dir, name } => self.bundle_show(Path::new(&dir), &name).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::SaveShow { path, name } => self.save_show(Path::new(&path), &name).unwrap_or_else(|message| ServerResponse::Error { message }),

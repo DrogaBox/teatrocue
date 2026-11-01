@@ -1186,6 +1186,33 @@ fn independent_players_reach_the_room_or_only_the_headphones_without_moving_the_
 }
 
 #[test]
+fn panic_stop_all_and_hard_stop_also_silence_the_carts_and_the_audition() {
+    let tag = "panic-carts";
+    let wav = write_wav(&format!("{tag}-w"), 2, 480_000, 48_000, |_, _| 0.25);
+    let show = write_show(tag, vec![audio_node(1, Some(&wav), false)]);
+    let mut cfg = config(tag);
+    cfg.backend.channels = 4;
+    cfg.monitor_first = Some(2);
+    cfg.show = Some(show.clone());
+    let socket = cfg.socket.clone();
+    let daemon = Daemon::start(cfg).expect("el daemon debe arrancar");
+    let _cleanup = Cleanup(vec![wav.clone(), show]);
+    let c = IpcClient::connect(&socket).unwrap();
+    let ui = SharedMemory::open(daemon.shm().name()).unwrap();
+    let path = wav.to_string_lossy().into_owned();
+    for stop in [ClientRequest::Panic, ClientRequest::StopAll, ClientRequest::HardStopAll] {
+        // Un pad de Carts en la sala y la audición en los auriculares, sin ninguna cue de la lista sonando.
+        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: path.clone(), gain_db: 0.0, monitor: false, start_secs: 0.0 }), ServerResponse::AdhocLoaded { .. }));
+        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 20, path: path.clone(), gain_db: 0.0, monitor: true, start_secs: 0.0 }), ServerResponse::AdhocLoaded { .. }));
+        assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 0 }), ServerResponse::Ok);
+        assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 20 }), ServerResponse::Ok);
+        wait_until("suenan el pad y la audición", || peak(&ui, 0, 2) > 0.2 && peak(&ui, 2, 2) > 0.2);
+        assert_eq!(req(&c, stop.clone()), ServerResponse::Ok);
+        wait_until(&format!("{stop:?} deja todo en silencio"), || peak(&ui, 0, 2) < 1e-4 && peak(&ui, 2, 2) < 1e-4);
+    }
+}
+
+#[test]
 fn headphone_audition_is_refused_when_no_headphone_output_is_configured() {
     let f = simple("noph", RingProducer::IpcServer);
     let c = IpcClient::connect(&f.socket).unwrap();

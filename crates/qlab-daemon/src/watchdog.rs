@@ -68,6 +68,9 @@ pub struct Beats {
     pub now_ns: u64,
     pub audio_ns: Option<u64>,
     pub sequencer_ns: Option<u64>,
+    /// Callbacks de audio desde el arranque: el latido también se renueva al abrir el stream, así que solo esto prueba
+    /// que el audio volvió a correr.
+    pub audio_callbacks: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +87,8 @@ pub enum WatchdogEvent {
 pub struct Watchdog {
     cfg: WatchdogConfig,
     audio_stalled: bool,
+    /// Callbacks contados cuando se detectó el congelamiento.
+    callbacks_at_stall: u64,
     seq_stalled: bool,
     muted: bool,
     healthy_streak: u32,
@@ -97,6 +102,7 @@ impl Watchdog {
         Self {
             cfg,
             audio_stalled: false,
+            callbacks_at_stall: 0,
             seq_stalled: false,
             muted: false,
             healthy_streak: 0,
@@ -136,12 +142,16 @@ impl Watchdog {
             Some((true, age)) => {
                 if !self.audio_stalled {
                     self.audio_stalled = true;
+                    self.callbacks_at_stall = beats.audio_callbacks;
                     out.push(WatchdogEvent::Stalled { who: Subsystem::Audio, age_ms: age / 1_000_000 });
                 }
                 self.maybe_restart(beats.now_ns, &mut out);
             }
+            // Un latido fresco sin callbacks nuevos es el que se escribe al reabrir el stream: la placa abrió pero
+            // todavía no sonó. Recién cuando corre el callback hay recuperación; si no corre, el latido envejece y
+            // siguen los reinicios (con su tope) hasta rendirse.
             Some((false, _)) => {
-                if self.audio_stalled {
+                if self.audio_stalled && beats.audio_callbacks > self.callbacks_at_stall {
                     self.audio_stalled = false;
                     self.restarts = 0;
                     self.gave_up = false;
@@ -217,6 +227,7 @@ impl WatchdogHandle {
                     now_ns: epoch.now_ns(),
                     audio_ns: health.audio_running.load(Ordering::Acquire).then(|| health.audio_heartbeat_ns.load(Ordering::Acquire)),
                     sequencer_ns: health.seq_running.load(Ordering::Acquire).then(|| health.seq_heartbeat_ns.load(Ordering::Acquire)),
+                    audio_callbacks: health.audio_callbacks.load(Ordering::Acquire),
                 };
                 for event in dog.check(beats) {
                     apply(&event, &health, &events);
@@ -292,8 +303,9 @@ mod tests {
         Watchdog::new(WatchdogConfig::default())
     }
 
+    /// Los callbacks avanzan con el latido de audio, como en un stream que suena.
     fn beats(now_ms: u64, audio_ms: Option<u64>, seq_ms: Option<u64>) -> Beats {
-        Beats { now_ns: now_ms * MS, audio_ns: audio_ms.map(|m| m * MS), sequencer_ns: seq_ms.map(|m| m * MS) }
+        Beats { now_ns: now_ms * MS, audio_ns: audio_ms.map(|m| m * MS), sequencer_ns: seq_ms.map(|m| m * MS), audio_callbacks: audio_ms.unwrap_or(0) }
     }
 
     #[test]
@@ -344,6 +356,25 @@ mod tests {
         assert_eq!(ev, vec![WatchdogEvent::Recovered { who: Subsystem::Audio }]);
         assert_eq!(d.restart_attempts(), 0);
         assert!(!d.audio_stalled());
+    }
+
+    #[test]
+    fn a_stream_that_reopens_but_never_runs_is_not_taken_as_recovered() {
+        let mut d = dog();
+        let mut events = Vec::new();
+        // El audio corrió hasta los 0 ms (40 callbacks) y se congeló. Cada reinicio reabre el stream y escribe un
+        // latido fresco, pero el callback no vuelve a correr.
+        let mut beat = 0;
+        for t in (300..=6_000).step_by(50) {
+            let ev = d.check(Beats { now_ns: t * MS, audio_ns: Some(beat * MS), sequencer_ns: None, audio_callbacks: 40 });
+            if ev.iter().any(|e| matches!(e, WatchdogEvent::RestartAudio { .. })) {
+                beat = t;
+            }
+            events.extend(ev);
+        }
+        assert!(!events.iter().any(|e| matches!(e, WatchdogEvent::Recovered { .. })), "{events:?}");
+        assert_eq!(events.iter().filter(|e| matches!(e, WatchdogEvent::RestartAudio { .. })).count(), 3);
+        assert!(events.contains(&WatchdogEvent::GaveUp), "se rinde y la salida queda caída (SIN AUDIO)");
     }
 
     #[test]

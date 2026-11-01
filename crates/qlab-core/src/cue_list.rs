@@ -288,6 +288,18 @@ impl CueList {
         if playhead_hit {
             self.playback_position = replacement;
         }
+        // Las Fade y Control que apuntaban a una cue borrada quedan sin destino: si no, el show ya no se podría
+        // guardar (la validación rechaza un destino inexistente) y el autoguardado fallaría en silencio.
+        for cue in self.cues.values_mut() {
+            if cue.basics.cue_target_id.is_some_and(|t| removed.contains(&t)) {
+                cue.basics.cue_target_id = None;
+            }
+            match &mut cue.kind {
+                CueKind::Fade(d) if d.target.is_some_and(|t| removed.contains(&t)) => d.target = None,
+                CueKind::Control(d) if d.target.is_some_and(|t| removed.contains(&t)) => d.target = None,
+                _ => {}
+            }
+        }
         Ok(removed)
     }
 
@@ -1754,6 +1766,15 @@ pub(crate) mod tests {
         l.remove_cue(CueId(1)).unwrap();
         assert_eq!(l.playback_position(), None);
         assert_eq!(l.remove_cue(CueId(1)), Err(ListError::UnknownCue(CueId(1))));
+    }
+
+    #[test]
+    fn removing_the_target_of_a_fade_leaves_the_fade_without_target_and_the_show_saveable() {
+        let mut l = list_of(vec![audio_cue(1, 0.0, 0.0, DoNotContinue), fade_cue(2, 0.0, 1.0, 1), audio_cue(3, 0.0, 0.0, DoNotContinue)]);
+        l.remove_cue(CueId(1)).unwrap();
+        let fade = l.cue(CueId(2)).unwrap();
+        assert_eq!(fade.basics.cue_target_id, None);
+        assert!(matches!(&fade.kind, CueKind::Fade(d) if d.target.is_none()));
     }
 
     #[test]

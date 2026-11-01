@@ -3198,3 +3198,26 @@ fn the_no_audio_banner_offers_retry_and_another_output_and_goes_away_when_audio_
     f.h.step();
     assert!(f.h.query_by_label("SIN AUDIO").is_none());
 }
+
+#[test]
+fn quitting_with_audio_playing_or_the_show_lock_asks_first_and_cancel_keeps_the_show() {
+    use crate::app::Confirm;
+    let mut f = fixture("salir");
+    f.h.get_by_label("GO").click();
+    pump(&mut f.h, "suena", |a| a.telemetry.is_playing());
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::Quit);
+    pump(&mut f.h, "pregunta antes de salir", |a| a.confirm == Some(Confirm::Quit));
+    f.h.step();
+    assert!(f.h.query_by_label_contains("Hay audio sonando").is_some());
+    assert!(!app(&f.h).quit_confirmed_for_test());
+    f.h.get_by_label("Cancelar").click();
+    pump(&mut f.h, "sigue abierto", |a| a.confirm.is_none());
+    assert!(app(&f.h).telemetry.is_playing(), "cancelar no corta nada");
+    // Parado y sin Bloqueo ni cambios, sale sin preguntar.
+    f.h.key_press(egui::Key::Escape);
+    f.h.key_press(egui::Key::Escape);
+    pump(&mut f.h, "silencio", |a| !a.telemetry.is_playing());
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::Quit);
+    f.h.step();
+    assert!(app(&f.h).confirm.is_none() && app(&f.h).quit_confirmed_for_test());
+}

@@ -209,6 +209,8 @@ struct Import {
 pub enum Confirm {
     NewShow,
     OpenShow,
+    /// Salir con algo sonando, con el Bloqueo de función o con cambios sin guardar.
+    Quit,
 }
 
 enum ActivePicker {
@@ -234,6 +236,8 @@ pub struct QlabApp {
     /// Hay cambios desde el último guardado, apertura o show nuevo.
     pub show_dirty: bool,
     pub confirm: Option<Confirm>,
+    /// El operador ya confirmó la salida: el próximo pedido de cierre de la ventana pasa.
+    quit_confirmed: bool,
     select_after_refresh: Option<u64>,
     import: Import,
     pub video: VideoHub,
@@ -386,6 +390,7 @@ impl QlabApp {
             show_path: None,
             show_dirty: false,
             confirm: None,
+            quit_confirmed: false,
             select_after_refresh: None,
             import: Import::default(),
             video: VideoHub::default(),
@@ -1162,7 +1167,14 @@ impl QlabApp {
                 }
                 Err(e) => self.engine_message = Some(format!("No se pudo lanzar el daemon: {e}")),
             },
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::Quit => {
+                if self.quit_reasons().is_empty() {
+                    self.quit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    self.confirm = Some(Confirm::Quit);
+                }
+            }
         }
     }
 
@@ -2464,12 +2476,36 @@ impl QlabApp {
         }
     }
 
-    /// Diálogo modal que pide confirmar una operación que descarta cambios sin guardar.
+    /// Lo que se perdería al cerrar ahora; vacío si se puede salir sin preguntar.
+    fn quit_reasons(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.telemetry.is_playing() {
+            out.push("Hay audio sonando: se corta al salir.");
+        }
+        if self.locked {
+            out.push("El Bloqueo de función está activo (¿hay función en curso?).");
+        }
+        if self.show_dirty {
+            out.push("Hay cambios sin guardar.");
+        }
+        out
+    }
+
+    /// La X de la ventana o Alt+F4 pasan por la misma confirmación que Archivo > Salir.
+    fn intercept_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && !self.quit_reasons().is_empty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Confirm::Quit);
+        }
+    }
+
+    /// Diálogo modal que pide confirmar una operación que descarta cambios sin guardar (o que corta la función).
     fn show_confirm(&mut self, ctx: &egui::Context) {
         let Some(which) = self.confirm else { return };
-        let (title, text) = match which {
-            Confirm::NewShow => ("Show nuevo", "Hay cambios sin guardar. ¿Descartarlos y crear un show nuevo?"),
-            Confirm::OpenShow => ("Abrir show", "Hay cambios sin guardar. ¿Descartarlos y abrir otro show?"),
+        let (title, text, accept) = match which {
+            Confirm::NewShow => ("Show nuevo", "Hay cambios sin guardar. ¿Descartarlos y crear un show nuevo?".to_string(), "Descartar cambios"),
+            Confirm::OpenShow => ("Abrir show", "Hay cambios sin guardar. ¿Descartarlos y abrir otro show?".to_string(), "Descartar cambios"),
+            Confirm::Quit => ("Salir de TeatroCue", format!("{}\n¿Salir igual?", self.quit_reasons().join("\n")), "Salir"),
         };
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::NULL.with("confirm_discard")).show(ctx, |ui| {
@@ -2479,7 +2515,7 @@ impl QlabApp {
             ui.label(text);
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button("Descartar cambios").clicked() {
+                if ui.button(accept).clicked() {
                     decision = Some(true);
                 }
                 if ui.button("Cancelar").clicked() {
@@ -2496,6 +2532,10 @@ impl QlabApp {
                 match which {
                     Confirm::NewShow => self.do_new_show(),
                     Confirm::OpenShow => self.start_open_show(),
+                    Confirm::Quit => {
+                        self.quit_confirmed = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
             }
             Some(false) => self.confirm = None,
@@ -2810,6 +2850,7 @@ impl QlabApp {
     /// Todo lo previo al dibujo: eventos, telemetría, atajos, guardado del borrador y reloj de repintado.
     pub fn logic_step(&mut self, ctx: &egui::Context) {
         self.frames += 1;
+        self.intercept_close(ctx);
         if self.license.is_locked() {
             return; // sin licencia no se conecta, no se atienden atajos ni se importa nada
         }
@@ -2946,6 +2987,7 @@ impl QlabApp {
         if let Some(limit) = self.cfg.exit_after {
             let left = limit.saturating_sub(self.started.elapsed());
             if left.is_zero() {
+                self.quit_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.request_repaint_after(left);
@@ -3142,6 +3184,10 @@ impl QlabApp {
     }
 
     #[cfg(test)]
+    pub(crate) fn quit_confirmed_for_test(&self) -> bool {
+        self.quit_confirmed
+    }
+
     pub(crate) fn on_exit_for_test(&mut self) {
         eframe::App::on_exit(self);
     }

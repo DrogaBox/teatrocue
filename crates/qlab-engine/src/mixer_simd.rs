@@ -267,6 +267,8 @@ fn reset_playback(voice: &Voice, rt: &mut VoiceRtState) {
     rt.transport_fade_step = 0.0;
     // Reinicio desde cero: los filtros no arrastran la cola de la reproducción anterior.
     rt.eq.reset_state();
+    // Ni los niveles que dejó una Fade Cue en la pasada anterior.
+    rt.matrix.undo_fades();
 }
 
 fn start_stop<P: Producer<Item = AudioStatus>>(voice: &Voice, rt: &mut VoiceRtState, frames: u32, curve: CurveTable, status: &mut P) {
@@ -318,6 +320,7 @@ fn begin_cell_fade(
         FadeMode::Absolute => target_db.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB),
         FadeMode::Relative => target_db.clamp(-span, span),
     };
+    rt.matrix.begin_fading();
     let (start, target) = match mode {
         FadeMode::Absolute => (rt.matrix.base_db[r][c], target_db),
         FadeMode::Relative => {
@@ -418,8 +421,7 @@ fn apply_to_voice<P: Producer<Item = AudioStatus>>(voice: &Voice, cmd: AudioComm
         AudioCommand::SetCrosspointDb { row, col, db, .. } => {
             let (r, c) = (row as usize, col as usize);
             if r <= rt.matrix.in_channels && c <= rt.matrix.out_channels {
-                rt.matrix.base_db[r][c] = if db.is_nan() { MIN_VOLUME_DB } else { db.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB) };
-                rt.matrix.matrix_dirty = true;
+                rt.matrix.set_cue_level(r, c, if db.is_nan() { MIN_VOLUME_DB } else { db.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB) });
             }
         }
         AudioCommand::SetMuteSoloMask { mute_mask, solo_mask, .. } => {
@@ -1482,6 +1484,27 @@ mod tests {
         assert!(ev.contains(&AudioStatus::VoiceCompleted { voice_id: 1, natural_eof: false }));
         assert_eq!(v.state(), VoiceState::Stopped);
         assert!(l[7199] == 0.0);
+    }
+
+    #[test]
+    fn a_new_go_after_a_fade_out_plays_at_the_cue_level_again() {
+        let mut h = Harness::new();
+        h.add(VoiceSpec::new(1, 1, 96_000).build(|_, _| 0.5));
+        // El fader de la cue a −6 dB; una Fade Cue la baja a silencio y la para; un relativo de −12 dB quedó encima.
+        h.cmd(AudioCommand::SetCrosspointDb { voice_id: 1, row: 1, col: 1, db: -6.0 });
+        h.cmd(play(1));
+        let fade = |id, mode, db, stop| AudioCommand::BeginCellFade { voice_id: 1, fade_id: id, mode, row: 1, col: 1, target_db: db, duration_frames: 480, curve: CurveTable::LINEAR, stop_target_when_done: stop };
+        h.cmd(fade(1, FadeMode::Relative, -12.0, false));
+        h.run(1000, 2);
+        h.cmd(fade(2, FadeMode::Absolute, MIN_VOLUME_DB, true));
+        h.run(2000, 2);
+        // Un fader movido durante el fundido cuenta como nivel de la cue.
+        h.cmd(AudioCommand::SetCrosspointDb { voice_id: 1, row: 1, col: 1, db: -3.0 });
+        // Segundo GO (otra función, o volver atrás en el ensayo): suena al nivel de la cue, sin el fundido ni el relativo.
+        h.cmd(play(1));
+        let l = ch(&h.run(4000, 2), 2, 0);
+        let want = 0.5 * 10f32.powf(-3.0 / 20.0);
+        assert!((l[3999] - want).abs() < 1e-4, "{} vs {want}", l[3999]);
     }
 
     #[test]

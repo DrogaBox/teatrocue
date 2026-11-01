@@ -137,6 +137,10 @@ pub struct AudioLevelMatrixRt {
     /// Ganancia lineal actual, suavizada a 5 ms `[in][out]`.
     pub current_crosspoint_lin: [[f32; MAX_OUTPUT_CHANNELS]; MAX_INPUT_CHANNELS],
     pub matrix_dirty: bool,
+    /// Niveles propios de la cue guardados al empezar el primer fundido de matriz (`faded`): un nuevo GO los
+    /// devuelve, así una cue que una Fade Cue bajó a silencio no vuelve a sonar muda.
+    cue_db: [[f32; MAX_OUTPUT_CHANNELS + 1]; MAX_INPUT_CHANNELS + 1],
+    faded: bool,
 }
 
 impl AudioLevelMatrixRt {
@@ -153,6 +157,8 @@ impl AudioLevelMatrixRt {
             target_crosspoint_lin: [[0.0; MAX_OUTPUT_CHANNELS]; MAX_INPUT_CHANNELS],
             current_crosspoint_lin: [[0.0; MAX_OUTPUT_CHANNELS]; MAX_INPUT_CHANNELS],
             matrix_dirty: true,
+            cue_db: [[MIN_VOLUME_DB; MAX_OUTPUT_CHANNELS + 1]; MAX_INPUT_CHANNELS + 1],
+            faded: false,
         };
         for col in 0..=MAX_OUTPUT_CHANNELS {
             m.base_db[0][col] = 0.0;
@@ -166,6 +172,33 @@ impl AudioLevelMatrixRt {
         m.recompute_targets(1.0, 1.0);
         m.snap_to_targets();
         m
+    }
+
+    /// Un fundido de matriz está por cambiar los niveles: se guardan los de la cue (una vez, antes del primero).
+    pub fn begin_fading(&mut self) {
+        if !self.faded {
+            self.cue_db = self.base_db;
+            self.faded = true;
+        }
+    }
+
+    /// Fija el nivel de una celda como nivel propio de la cue (un fader del Inspector), también bajo un fundido.
+    pub fn set_cue_level(&mut self, row: usize, col: usize, db: f32) {
+        self.base_db[row][col] = db;
+        if self.faded {
+            self.cue_db[row][col] = db;
+        }
+        self.matrix_dirty = true;
+    }
+
+    /// Deshace lo que dejaron los fundidos (absolutos y relativos) y vuelve a los niveles de la cue.
+    pub fn undo_fades(&mut self) {
+        if self.faded {
+            self.base_db = self.cue_db;
+            self.rel_offset_db = [[0.0; MAX_OUTPUT_CHANNELS + 1]; MAX_INPUT_CHANNELS + 1];
+            self.faded = false;
+            self.matrix_dirty = true;
+        }
     }
 
     /// Recalcula `target_crosspoint_lin` cuando cambia un fader o avanza un `FadeCue`.
