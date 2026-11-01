@@ -75,17 +75,20 @@ Después, el botón **PFL** del Inspector escucha la cue —y el **PFL** de cada
 - Cue **Control**: Stop (con fundido), Pause, Resume, Devamp, Go to (repetir una sección), Load, Arm, Disarm.
 - Cue **Memo/Espera**: no suena, dura el tiempo que indique; con «Auto-continue» encadena la siguiente.
 - Cue **OSC**: manda un mensaje a otro equipo (luces, otra PC).
-- **Archivo → Abrir reciente**, **Empaquetar show** (copia el show con todos sus audios).
+- **Archivo → Abrir reciente**, **Empaquetar show** (copia el show con todos sus audios, también los de los pads de Carts).
 - **Archivos que no se encuentran**: al abrir un show cuyos audios cambiaron de lugar (otra PC, otro pendrive) aparece un solo aviso con los que faltan, y **Archivo → Buscar archivos faltantes…** pide la carpeta donde están ahora: se buscan por nombre, también en las subcarpetas, y las cues quedan armadas con la ruta nueva. Después, guardar el show.
 
 ## Audio
 **Ver → Configuración de audio…**: interfaz de sonido, canales, buffer y frecuencia. Aplicar reinicia el motor (se corta lo que suena) y recarga el show abierto.
+
+**Si se pierde la placa** (se desenchufa la interfaz o Windows la cambia): el motor la vuelve a abrir solo. Si no puede, aparece arriba de todo un cartel rojo **SIN AUDIO** con el motivo; el motor la sigue buscando cada 2 segundos y el cartel se va solo cuando vuelve a sonar. **Reintentar** prueba en el acto (por ejemplo, apenas se vuelve a enchufar) y **Elegir otra salida…** abre la configuración de audio para pasar a otra placa o al jack de la computadora. El show y la lista no se tocan.
 
 ## Control remoto por OSC (opcional, apagado por defecto)
 Se activa en la misma ventana de audio (puerto 53000). Desde un celular o tablet (TouchOSC, etc.):
 `/go` `/panic` `/stop` `/pause` `/resume` `/next` `/prev` `/master <dB>` y por cue
 `/cue/<n>/start|stop|pause|resume|devamp|load|arm|disarm`.
 Úselo solo en una red de confianza: quien conozca el puerto puede disparar la función.
+Con el **Bloqueo de función (Ctrl+L)** activo, por la red solo entran las paradas: `/panic`, `/stop` y `/hardstop`.
 
 ## Si algo falla
 - Un programa que se cierra solo deja el motivo en `C:\ProgramData\TeatroCue\crash.log`.
