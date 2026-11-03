@@ -12,6 +12,9 @@ pub const MIN_VOLUME_DB: f32 = -120.0;
 pub const MAX_VOLUME_DB: f32 = 12.0;
 pub const MAX_INPUT_CHANNELS: usize = 32;
 pub const MAX_OUTPUT_CHANNELS: usize = 64;
+/// Nivel de cada lado cuando un archivo mono sale por un par estéreo: el centro de una consola (−3 dB por lado, la misma
+/// potencia que un solo canal a 0 dB). Lo usan las cues y los pads de Carts.
+pub const MONO_CENTER_DB: f32 = -3.0;
 
 /// Identificador de gang (agrupación de faders). `None` en la celda = sin gang.
 pub type GangId = NonZeroU8;
@@ -129,7 +132,8 @@ pub struct AudioLevelMatrixData {
 }
 
 impl AudioLevelMatrixData {
-    /// Defecto de `AudioCue`: masters y trims a 0 dB, crosspoints `i == j` a 0 dB y el resto a -inf.
+    /// Defecto de `AudioCue`: masters y trims a 0 dB, crosspoints `i == j` a 0 dB y el resto a -inf. Un archivo mono
+    /// con dos salidas o más sale por las dos primeras a [`MONO_CENTER_DB`] (al centro), no solo por la izquierda.
     pub fn new_one_to_one(inputs: usize, outputs: usize) -> Result<Self, MatrixError> {
         if !(1..=MAX_INPUT_CHANNELS).contains(&inputs) || !(1..=MAX_OUTPUT_CHANNELS).contains(&outputs) {
             return Err(MatrixError::InvalidDimensions { inputs, outputs });
@@ -138,11 +142,33 @@ impl AudioLevelMatrixData {
         let mut cells = Vec::with_capacity((inputs + 1) * cols);
         for row in 0..=inputs {
             for col in 0..=outputs {
-                let db = if row == 0 || col == 0 || row == col { 0.0 } else { MIN_VOLUME_DB };
+                let db = if row == 0 || col == 0 {
+                    0.0
+                } else if inputs == 1 && outputs >= 2 {
+                    if col <= 2 { MONO_CENTER_DB } else { MIN_VOLUME_DB }
+                } else if row == col {
+                    0.0
+                } else {
+                    MIN_VOLUME_DB
+                };
                 cells.push(MatrixCell::new(db));
             }
         }
         Ok(Self { inputs: inputs as u8, outputs: outputs as u8, cells, mute_mask: 0, solo_mask: 0 })
+    }
+
+    /// La matriz de fábrica que tenían las cues mono hasta ahora (solo por la salida 1): un show guardado así la trae
+    /// escrita. Es la que el operador nunca tocó, así que pasa al defecto actual (al centro).
+    pub fn is_old_mono_default(&self) -> bool {
+        let (inputs, outputs) = (self.inputs as usize, self.outputs as usize);
+        if inputs != 1 || outputs < 2 || self.mute_mask != 0 || self.solo_mask != 0 || self.cells.len() != 2 * (outputs + 1) {
+            return false;
+        }
+        self.cells.iter().enumerate().all(|(i, c)| {
+            let (row, col) = (i / (outputs + 1), i % (outputs + 1));
+            let want = if row == 0 || col == 0 || col == 1 { 0.0 } else { MIN_VOLUME_DB };
+            c.db == want
+        })
     }
 
     #[inline]
@@ -249,6 +275,22 @@ impl AudioLevelMatrixData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mono_default_goes_to_the_center_and_the_old_one_is_recognised() {
+        let m = AudioLevelMatrixData::new_one_to_one(1, 4).unwrap();
+        let row1: Vec<f32> = m.cells[5..10].iter().map(|c| c.db).collect();
+        assert_eq!(row1, [0.0, MONO_CENTER_DB, MONO_CENTER_DB, MIN_VOLUME_DB, MIN_VOLUME_DB]);
+        assert_eq!(AudioLevelMatrixData::new_one_to_one(1, 1).unwrap().cells[3].db, 0.0, "con una sola salida va entera");
+        assert_eq!(AudioLevelMatrixData::new_one_to_one(2, 2).unwrap().cells[5].db, MIN_VOLUME_DB, "el estéreo sigue uno-a-uno");
+        let mut old = m.clone();
+        for (i, db) in [0.0, 0.0, MIN_VOLUME_DB, MIN_VOLUME_DB, MIN_VOLUME_DB].into_iter().enumerate() {
+            old.cells[5 + i].db = db;
+        }
+        assert!(old.is_old_mono_default() && !m.is_old_mono_default());
+        old.cells[6].db = -6.0;
+        assert!(!old.is_old_mono_default(), "un nivel tocado por el operador se respeta");
+    }
 
     #[test]
     fn db_to_linear_edges() {

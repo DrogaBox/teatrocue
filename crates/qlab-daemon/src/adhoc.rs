@@ -2,7 +2,7 @@
 //! (sale solo por los auriculares). Cada uno es una voz del motor con un id fuera del rango de las cues y con su propia
 //! matriz de niveles; el playhead y el Standby ni se enteran.
 
-use qlab_protocol::matrix::{AudioLevelMatrixData, MatrixCell, MAX_INPUT_CHANNELS, MAX_VOLUME_DB, MIN_VOLUME_DB};
+use qlab_protocol::matrix::{AudioLevelMatrixData, MatrixCell, MAX_INPUT_CHANNELS, MAX_VOLUME_DB, MIN_VOLUME_DB, MONO_CENTER_DB};
 
 /// Las cues usan ids pequeños y crecientes; los reproductores independientes viven por encima de este.
 pub const ADHOC_BASE: u64 = 1 << 48;
@@ -38,8 +38,8 @@ pub fn levels(file_channels: usize, device_channels: usize, first_out: usize, ga
         }
     };
     if inputs == 1 {
-        route(1, first_out, -3.0);
-        route(1, first_out + 1, -3.0);
+        route(1, first_out, MONO_CENTER_DB);
+        route(1, first_out + 1, MONO_CENTER_DB);
     } else {
         for i in 1..=inputs {
             route(i, first_out + i - 1, 0.0);

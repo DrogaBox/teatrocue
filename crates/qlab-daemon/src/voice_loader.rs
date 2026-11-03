@@ -198,11 +198,13 @@ fn compile_segments(t: &AudioTimeAndLoopsData, start: u64, end: u64) -> Result<V
     Ok(segs)
 }
 
-/// Matriz en vivo `M × N`: uno-a-uno por defecto, con las celdas de `levels` encima si las hay.
+/// Matriz en vivo `M × N`: la de fábrica de una cue (uno-a-uno; un archivo mono, al centro de las dos primeras salidas),
+/// con las celdas de `levels` encima si las hay.
 fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&AudioLevelMatrixData>) -> AudioLevelMatrixRt {
     let m = file_channels.clamp(1, MAX_INPUT_CHANNELS);
     let mut matrix = AudioLevelMatrixRt::new(m, device_channels);
-    if let Some(l) = levels {
+    let default = levels.is_none().then(|| AudioLevelMatrixData::new_one_to_one(m, matrix.out_channels).ok()).flatten();
+    if let Some(l) = levels.or(default.as_ref()) {
         if l.validate().is_ok() {
             let cols = l.outputs as usize + 1;
             for row in 0..=(l.inputs as usize).min(m) {
@@ -345,6 +347,11 @@ mod tests {
         let rt = unsafe { l.voice(CueId(1)).unwrap().rt_mut() };
         assert_eq!((rt.matrix.in_channels, rt.matrix.out_channels), (1, 6));
         assert_eq!(l.device_channels(), 6);
+        // Un archivo mono sin niveles propios sale al centro de las dos primeras salidas, no solo por la izquierda.
+        let center = qlab_protocol::matrix::db_to_linear(qlab_protocol::matrix::MONO_CENTER_DB);
+        let row = &rt.matrix.target_crosspoint_lin[0];
+        assert!((row[0] - center).abs() < 1e-6 && (row[1] - center).abs() < 1e-6, "{:?}", &row[..6]);
+        assert!(row[2..6].iter().all(|&g| g == 0.0), "el resto de las salidas en silencio: {:?}", &row[..6]);
     }
 
     #[test]

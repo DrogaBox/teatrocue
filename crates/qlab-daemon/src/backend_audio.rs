@@ -611,7 +611,14 @@ impl AudioBackend {
         #[cfg(windows)]
         if self.cfg.exclusive {
             let parts = self.parts.clone();
-            match wasapi_exclusive::ExclusiveStream::start(&self.cfg, move |channels, rate| RtRenderer::new(parts, channels, rate)) {
+            let opened = exclusive_target(&self.cfg).map_err(|e| e.to_string()).and_then(|(cfg, name)| {
+                let (stream, mut info) = wasapi_exclusive::ExclusiveStream::start(&cfg, move |channels, rate| RtRenderer::new(parts, channels, rate))?;
+                if let Some(name) = name {
+                    info.device = name;
+                }
+                Ok((stream, info))
+            });
+            match opened {
                 Ok((stream, info)) => return Ok((Running::Exclusive(stream), info)),
                 Err(e) => warnings.push(format!("WASAPI exclusivo no disponible ({e}); se usa el modo compartido")),
             }
@@ -727,6 +734,30 @@ pub fn comparable_device_name(name: &str) -> String {
     out
 }
 
+/// La consola del teatro: una Behringer Xenyx (802S y parecidas), con interfaz USB estéreo. Sin una salida elegida en
+/// la configuración, el motor la prefiere a la predeterminada de Windows, que puede cambiar sola (un monitor HDMI que se
+/// enchufa, los parlantes de la PC).
+pub fn is_theater_console(name: &str) -> bool {
+    let n = comparable_device_name(name);
+    n.contains("xenyx") || n.contains("802s")
+}
+
+/// El modo exclusivo abre el endpoint por su ID: se busca la salida igual que en el modo compartido (por nombre, o la
+/// consola del teatro, o la predeterminada) y se pasa su ID, junto con el nombre para mostrarlo.
+#[cfg(windows)]
+fn exclusive_target(cfg: &BackendConfig) -> Result<(BackendConfig, Option<String>), BackendError> {
+    if cfg.device.as_deref().is_some_and(|d| d.starts_with('{')) {
+        return Ok((cfg.clone(), None));
+    }
+    let host = cpal::host_from_id(cpal::HostId::Wasapi).map_err(stream_err)?;
+    let device = select_device(&host, cfg.device.as_deref())?;
+    let name = device.description().map(|d| d.name().to_string()).ok();
+    let id = device.id().map_err(stream_err)?;
+    let mut target = cfg.clone();
+    target.device = Some(id.id().to_string());
+    Ok((target, name))
+}
+
 /// La salida `name` es la buscada `wanted`: el mismo nombre (sin la numeración de Windows) o uno que lo contiene.
 fn device_matches(name: &str, wanted: &str) -> bool {
     let (n, w) = (comparable_device_name(name), comparable_device_name(wanted));
@@ -735,7 +766,16 @@ fn device_matches(name: &str, wanted: &str) -> bool {
 
 fn select_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, BackendError> {
     match name {
-        None => host.default_output_device().ok_or_else(|| BackendError::NoDevice("no hay dispositivo de salida predeterminado".into())),
+        None => {
+            if let Ok(devices) = host.output_devices() {
+                for d in devices {
+                    if d.description().is_ok_and(|x| is_theater_console(x.name())) {
+                        return Ok(d);
+                    }
+                }
+            }
+            host.default_output_device().ok_or_else(|| BackendError::NoDevice("no hay dispositivo de salida predeterminado".into()))
+        }
         Some(wanted) => {
             let devices = host.output_devices().map_err(stream_err)?;
             let mut names = Vec::new();
@@ -899,6 +939,8 @@ mod tests {
     fn a_card_renumbered_by_windows_is_still_the_same_output() {
         assert_eq!(comparable_device_name("Speakers (2- Focusrite USB)"), "speakers (focusrite usb)");
         assert_eq!(comparable_device_name("Altavoces (12- Realtek(R) Audio)"), "altavoces (realtek(r) audio)");
+        assert!(is_theater_console("Speakers (2- XENYX 802S)") && is_theater_console("Altavoces (Behringer Xenyx 802S)"));
+        assert!(!is_theater_console("Speakers (USB Audio CODEC)") && !is_theater_console("Altavoces (Realtek(R) Audio)"));
         assert!(device_matches("Speakers (2- Audio Device)", "Speakers (Audio Device)"), "la placa vuelve con otro número");
         assert!(device_matches("Speakers (Audio Device)", "Speakers (3- Audio Device)"), "y también al revés");
         assert!(device_matches("Speakers (2- Focusrite USB)", "focusrite"), "una parte del nombre sigue alcanzando");

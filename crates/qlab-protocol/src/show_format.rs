@@ -352,6 +352,11 @@ impl ShowFile {
         let mut show: ShowFile = serde_json::from_str(json)?;
         show.validate()?;
         show.clear_start_points();
+        show.walk_mut(|n| {
+            if let Some(l) = n.body.audio_mut().and_then(|a| a.levels.as_mut()).filter(|l| l.is_old_mono_default()) {
+                *l = AudioLevelMatrixData::new_one_to_one(1, l.outputs as usize).expect("las dimensiones vienen de una matriz válida");
+            }
+        });
         Ok(show)
     }
 
@@ -707,6 +712,29 @@ mod tests {
         ctl.basics.cue_target_id = Some(CueId(77));
         let bad = ShowFile { cues: vec![audio, ctl], ..show };
         assert!(matches!(ShowFile::from_json(&bad.to_json()), Err(ShowError::BadFadeTarget { target, .. }) if target == CueId(77)));
+    }
+
+    /// Un show guardado antes trae escrita la matriz vieja de las cues mono (solo salida 1) y un «arrancar desde» de
+    /// una memoria: al abrirlo, el mono va al centro y la cue arranca desde su inicio. Una matriz tocada se respeta.
+    #[test]
+    fn opening_an_old_show_centers_untouched_mono_cues_and_drops_armed_memories() {
+        let mut mono = CueNodeDto::new_default(NewCueKind::Audio, 1, "1".into());
+        let mut touched = CueNodeDto::new_default(NewCueKind::Audio, 2, "2".into());
+        let mut old = AudioLevelMatrixData::new_one_to_one(2, 2).unwrap();
+        old.inputs = 1;
+        old.cells.truncate(6);
+        for (n, levels) in [(&mut mono, old.clone()), (&mut touched, { let mut t = old.clone(); t.cells[5].db = -10.0; t })] {
+            let CueBody::Audio(a) = &mut n.body else { unreachable!() };
+            a.levels = Some(levels);
+            a.time_loops.start_override_secs = Some(3.0);
+        }
+        assert!(old.is_old_mono_default());
+        let show = ShowFile { format: SHOW_FORMAT.into(), name: "m".into(), sample_rate: 48_000, carts: Default::default(), cues: vec![mono, touched] };
+        let back = ShowFile::from_json(&show.to_json()).unwrap();
+        let level = |i: usize, cell: usize| back.cues[i].body.audio().unwrap().levels.as_ref().unwrap().cells[cell].db;
+        assert_eq!((level(0, 4), level(0, 5)), (crate::matrix::MONO_CENTER_DB, crate::matrix::MONO_CENTER_DB));
+        assert_eq!((level(1, 4), level(1, 5)), (0.0, -10.0));
+        assert!(back.cues.iter().all(|c| c.body.audio().unwrap().time_loops.start_override_secs.is_none()));
     }
 
     /// Un show guardado con una versión anterior (sin memorias, sin cues de control/OSC/memo, sin «arrancar desde»)

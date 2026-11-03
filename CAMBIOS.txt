@@ -15,7 +15,19 @@ NUEVO
    cae. El show guardado nunca guarda una memoria elegida, y si un show viejo traía una,
    al abrirlo se ignora: al pasar de una cue a la siguiente, siempre suena desde el inicio.
 
-2. Fundidos para ballet
+2. Los archivos mono suenan por los dos lados
+   Una cue con un archivo mono salía solo por la salida 1 (el lado izquierdo de la consola).
+   Ahora sale al centro, por las salidas 1 y 2 a -3 dB cada una, igual que los pads de Carts.
+   No hace falta puentear las salidas de la consola. Los shows guardados se corrigen solos al
+   abrirlos; si en una cue se habían tocado los niveles a mano, se respetan.
+
+3. Consola Behringer Xenyx 802S
+   Si la Xenyx está conectada por USB y en Configuración de audio está elegido el dispositivo
+   predeterminado, TeatroCue sale por la consola aunque Windows tenga otra salida como
+   predeterminada (un monitor HDMI, los parlantes de la PC). El modo exclusivo, el equivalente
+   a ASIO de Pro Tools, ahora también funciona eligiendo la placa por su nombre.
+
+4. Fundidos para ballet
    Cada cue de audio tiene, en Time & Loops > "Fundidos de la cue", un fundido de Entrada
    (al arrancar) y uno de Salida al parar (con Esc, "Parar todo" o una cue Stop). Para una
    variación: entrada 0,3 s y salida de 2 a 3 s. Se guardan con el show y la columna Acción
@@ -24,33 +36,33 @@ NUEVO
    Opciones > Preferencias > "Fundidos al parar" (0 = corte seco sin clic). Al parar manda el
    mayor entre el fundido de la cue y el global. Esc Esc sigue siendo la parada dura.
 
-3. Traba de doble GO
+5. Traba de doble GO
    Dos Espacios muy seguidos (nervios, un pedal que rebota) disparaban dos cues. Ahora el
    segundo se ignora si llega dentro de 0,4 s y aparece "GO repetido: ignorado". El tiempo
    se cambia en Opciones > Preferencias > Función (0 = sin traba).
 
-4. Notas de la cue en STANDBY
+6. Notas de la cue en STANDBY
    Las notas de la cue en espera se leen grandes en el recuadro STANDBY, debajo del nombre
    ("Esperar el saludo", "GO en el 3er acorde"), hasta 3 renglones.
 
-5. Archivos que no se encuentran
+7. Archivos que no se encuentran
    Al abrir un show cuyos audios cambiaron de lugar (otra PC, otro pendrive) aparece un solo
    aviso con los que faltan, y Archivo > Buscar archivos faltantes... pide la carpeta donde
    están ahora. Se buscan por nombre, también en las subcarpetas, y las cues quedan armadas
    con la ruta nueva. Después, guardar el show.
 
-6. Herramientas de ensayo
+8. Herramientas de ensayo
    Velocidad de a 1 % con las teclas - y + (también con la cue sonando); Ctrl+= vuelve a 1.00×.
    Los botones de Time & Loops van de 0.80x a 1.20x. Bucle de ensayo: en el panel de Memorias,
    Ctrl+clic en la memoria donde empieza y Ctrl+clic en la donde termina; la cue repite ese
    tramo sin cortes hasta que se para con Esc, y vuelve a quedar como estaba (no se guarda en
    el show). El reloj gigante muestra además la hora real y la próxima cue.
-7. Si se pierde la placa de audio
+9. Si se pierde la placa de audio
    Si se desenchufa la interfaz o Windows la cambia, el motor la vuelve a abrir solo. Si no puede,
    aparece un cartel rojo SIN AUDIO arriba de todo con "Reintentar" y "Elegir otra salida..."
    (el jack de la notebook, otra placa). El show y la lista no se tocan.
 
-8. Instalador con menú
+10. Instalador con menú
    Al abrir Instalar_TeatroCue.exe con doble clic aparece un menú: instalar o actualizar,
    solo la licencia, reparar la licencia (si dice "Licencia no válida", esta es la opción),
    restablecer la fecha, sin acceso directo, en otra carpeta. Después pide la contraseña
@@ -64,68 +76,68 @@ NUEVO
 CORREGIDO
 ---------
 
-9. El panel de Memorias responde a los clics
+11. El panel de Memorias responde a los clics
    Hacer clic en una memoria, en PFL, en Renombrar o en Quitar dentro del panel no hacía
    nada. Ahora responden. Arrastrar una fila para cambiar el orden sigue funcionando.
 
-10. Elegir una memoria con la cue sonando
+12. Elegir una memoria con la cue sonando
    A veces la cue se paraba y no volvía a arrancar desde la memoria (aparecía "No se guardó:
    detén la cue antes de cambiar su archivo..."). Ahora corta rápido y relanza desde la
    memoria, sin esperar el fundido de parada.
 
-11. Bloqueo de función y teclado
+13. Bloqueo de función y teclado
    Con el Bloqueo (Ctrl+L) activo, Espacio, Esc y P llegan aunque un campo de texto tenga
    el foco (por ejemplo la búsqueda de memorias): el campo lo suelta y la tecla no se
    escribe en él. Al activar el bloqueo se suelta el foco de cualquier campo.
 
-12. Avisos repetidos al abrir un show
+14. Avisos repetidos al abrir un show
    Cada archivo que faltaba producía dos avisos iguales. Ahora, uno solo con la lista.
 
-13. Empaquetar show lleva también los efectos de los pads de Carts
+15. Empaquetar show lleva también los efectos de los pads de Carts
    Antes el paquete copiaba solo los audios de las cues; al abrirlo en otra PC los pads quedaban
    mudos. Ahora los pads viajan en la carpeta audio/ y se encuentran al abrir el paquete.
 
-14. El control remoto OSC respeta el Bloqueo de función
+16. El control remoto OSC respeta el Bloqueo de función
    Con Ctrl+L activo, por la red solo entran las paradas (/panic, /stop, /hardstop).
 
-15. Panic y "Parar todo" también callan los Carts y la escucha
+17. Panic y "Parar todo" también callan los Carts y la escucha
    Antes Esc, Esc Esc y "Parar todo" paraban solo las cues de la lista: un pad de Carts o la
    escucha por auriculares (PFL) seguían sonando. Ahora cualquier parada general calla todo.
 
-16. Una cue bajada por una Fade vuelve a su nivel con el próximo GO
+18. Una cue bajada por una Fade vuelve a su nivel con el próximo GO
    Si una Fade Cue llevaba una música a silencio, al volver a dispararla (volver atrás en el
    ensayo, o la segunda función del día sin reabrir el show) sonaba muda o al nivel del fade.
    Ahora cada GO arranca con los niveles propios de la cue.
 
-17. Borrar la cue a la que apunta una Fade ya no traba el guardado
+19. Borrar la cue a la que apunta una Fade ya no traba el guardado
    La Fade quedaba apuntando a una cue que no existe y el show no se podía guardar (tampoco el
    autoguardado). Ahora la Fade queda sin destino y se le elige uno nuevo en el Inspector.
 
-18. Salir pregunta antes de cortar
+20. Salir pregunta antes de cortar
    Ctrl+Q, Archivo > Salir o la X de la ventana preguntan si hay audio sonando, si está puesto
    el Bloqueo de función o si hay cambios sin guardar.
 
-19. Placa que abre pero no suena
+21. Placa que abre pero no suena
    Si la interfaz se abre pero no pide audio, el motor ya no reintenta en silencio para
    siempre: después de tres intentos aparece el cartel SIN AUDIO.
 
-20. GO y PANIC con ventanas abiertas
+22. GO y PANIC con ventanas abiertas
    Con el Bloqueo de función (Ctrl+L), Espacio, Esc y P funcionan aunque haya cualquier
    ventana abierta (Ayuda, Novedades, Preferencias, Configuración de audio...). Sin Bloqueo,
    Espacio y P funcionan sobre Ayuda y Novedades, y Esc sigue cerrando la ventana.
 
-21. GO y PANIC no esperan a Guardar ni a Empaquetar
+23. GO y PANIC no esperan a Guardar ni a Empaquetar
    Guardar, el autoguardado, Empaquetar y Exportar el guion van por un canal aparte: aunque el
    disco esté lento o se copien muchos audios, GO y PANIC responden en el acto. Con el Bloqueo
    activo no se puede Empaquetar ni Importar audio.
 
-22. El ensayo no queda guardado en el show
+24. El ensayo no queda guardado en el show
    Guardar o el autoguardado escriben cada cue como es en la función: sin el punto de "Retomar
    al parar", sin el arranque de una memoria elegida y sin el bucle de ensayo. Ahora se puede
    guardar con el bucle sonando: el bucle sigue y el archivo queda como corresponde. Lo que se
    edita mientras se guarda queda marcado como pendiente.
 
-23. Cambiar la placa en Configuración de audio ya no deja el programa sin motor
+25. Cambiar la placa en Configuración de audio ya no deja el programa sin motor
    En Windows, "Aplicar y reiniciar motor" (y "Elegir otra salida..." del cartel SIN AUDIO)
    apagaba el motor y no podía volver a arrancarlo: quedaba la pantalla "El daemon de audio
    no está activo". Ahora el motor nuevo arranca y el programa se reconecta solo.
