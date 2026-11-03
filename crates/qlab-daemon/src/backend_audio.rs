@@ -886,16 +886,18 @@ fn select_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, 
             host.default_output_device().ok_or_else(|| BackendError::NoDevice("no hay dispositivo de salida predeterminado".into()))
         }
         Some(wanted) => {
-            let devices = host.output_devices().map_err(stream_err)?;
-            let mut names = Vec::new();
-            for d in devices {
-                let n = d.description().map(|d| d.name().to_string()).unwrap_or_default();
-                if device_matches(&n, wanted) {
-                    return Ok(d);
-                }
-                names.push(n);
+            let devices: Vec<(cpal::Device, String)> =
+                host.output_devices().map_err(stream_err)?.map(|d| {
+                    let n = d.description().map(|d| d.name().to_string()).unwrap_or_default();
+                    (d, n)
+                }).collect();
+            // Primero el nombre exacto: con dos placas del mismo modelo («Speakers (Audio Device)» y «Speakers (2- Audio
+            // Device)») la comparación sin la numeración de Windows no las distingue.
+            let exact = devices.iter().position(|(_, n)| n.trim().eq_ignore_ascii_case(wanted.trim()));
+            match exact.or_else(|| devices.iter().position(|(_, n)| device_matches(n, wanted))) {
+                Some(i) => Ok(devices.into_iter().nth(i).expect("índice válido").0),
+                None => Err(BackendError::NoDevice(format!("`{wanted}` no existe; salidas: {}", devices.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(" | ")))),
             }
-            Err(BackendError::NoDevice(format!("`{wanted}` no existe; salidas: {}", names.join(" | "))))
         }
     }
 }

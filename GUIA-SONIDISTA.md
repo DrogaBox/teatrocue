@@ -82,7 +82,7 @@ Después, el botón **PFL** del Inspector escucha la cue —y el **PFL** de cada
 ## Audio
 **Ver → Configuración de audio…**: interfaz de sonido, canales, buffer y frecuencia. Aplicar reinicia el motor (se corta lo que suena) y recarga el show abierto.
 
-**Consola Behringer Xenyx 802S**: por USB es una placa estéreo (dos fichas, a 48 kHz). Si está conectada y la salida es «Dispositivo predeterminado del sistema», TeatroCue sale por ella aunque Windows tenga otra salida predeterminada. En la configuración de audio aparece **Usar la Xenyx 802S**, que la deja elegida con su formato. **Modo exclusivo** hace que solo TeatroCue suene por la placa, como ASIO en Pro Tools: los sonidos de Windows y de otros programas no se cuelan; si la placa no lo acepta, se usa el modo normal y se avisa.
+**Consola Behringer Xenyx 802S**: por USB es una placa estéreo (dos fichas, a 48 kHz). Si está conectada y la salida es «Dispositivo predeterminado del sistema», TeatroCue sale por ella aunque Windows tenga otra salida predeterminada. En la configuración de audio aparece **Usar la Xenyx 802S**, que la deja elegida con su formato. **Modo exclusivo** hace que solo TeatroCue suene por la placa, como ASIO en Pro Tools: los sonidos de Windows y de otros programas no se cuelan; si la placa no lo acepta, se usa el modo normal y se avisa. Viene apagado: conviene probarlo primero en un ensayo con la PC del teatro y, si el contador **XR** (cortes) sube, volver al modo normal.
 
 **MONO**: los audios vienen en estéreo, con instrumentos paneados a cada lado. Si de la consola se usa una sola ficha, con MONO encendido se escucha todo (lo paneado al otro lado no se pierde). Los auriculares siguen en estéreo.
 

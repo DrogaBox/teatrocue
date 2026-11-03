@@ -34,7 +34,8 @@ NUEVO
    (un monitor HDMI, los parlantes de la PC). En Ver > Configuración de audio aparece el
    botón "Usar la Xenyx 802S", que la deja elegida con su formato (2 canales, 48 kHz).
    "Modo exclusivo" hace que solo TeatroCue suene por la placa, como ASIO en Pro Tools: los
-   sonidos de Windows y de otros programas no se cuelan por la consola.
+   sonidos de Windows y de otros programas no se cuelan por la consola. Viene apagado:
+   conviene probarlo primero en un ensayo y, si el contador XR (cortes) sube, apagarlo.
 
 5. Por dónde sale cada cue y cada pad ("Sale por")
    En la pestaña Audio Levels de cada cue, y en el editor de cada pad de Carts, se elige
