@@ -3298,3 +3298,90 @@ fn a_save_stuck_on_a_slow_disk_does_not_hold_back_go_panic_or_later_edits() {
     let _ = reader.join();
     assert!(app(&f.h).show_dirty, "la Fade agregada mientras se guardaba no quedó en el archivo");
 }
+
+fn with_memory_on(f: &mut Fixture, id: u64, secs: f64) {
+    app_mut(&mut f.h).select(id);
+    pump(&mut f.h, "borrador de la cue", |a| a.inspector.draft.as_ref().is_some_and(|d| d.id() == id));
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories = vec![qlab_protocol::cue_dto::MemoryMark { secs, name: "m".into(), note: String::new() }];
+    }
+    pump(&mut f.h, "memoria guardada", |a| a.model.summary(id).is_some_and(|c| !c.memories.is_empty()) && a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()));
+}
+
+fn first_read_secs(f: &mut Fixture, id: u64) -> f64 {
+    pump(&mut f.h, "suena", |a| a.telemetry.running.get(&id).is_some_and(|i| i.source_frame > 0));
+    app(&f.h).telemetry.running.get(&id).unwrap().source_frame as f64 / 48_000.0
+}
+
+#[test]
+fn the_next_cue_after_one_ends_starts_from_its_beginning_even_after_a_memory_jump() {
+    for jump in [false, true] {
+        let mut f = fixture(if jump { "nextjump" } else { "nextplain" });
+        with_memory_on(&mut f, 1, 1.0);
+        with_memory_on(&mut f, 2, 1.0);
+        app_mut(&mut f.h).select(1);
+        if jump {
+            let ctx = f.h.ctx.clone();
+            app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 1.0);
+            pump(&mut f.h, "armada", |a| a.model.summary(1).is_some_and(|c| c.start_override_secs == Some(1.0)));
+        }
+        pump(&mut f.h, "playhead en 1", |a| a.model.playhead == Some(1));
+        f.h.key_press(egui::Key::Space);
+        let s1 = first_read_secs(&mut f, 1);
+        pump(&mut f.h, "la 1 termina", |a| a.model.state_of(1) == CueUiState::Completed);
+        pump(&mut f.h, "playhead en 2", |a| a.model.playhead == Some(2));
+        for _ in 0..20 { f.h.step(); }
+        let ov2 = app(&f.h).model.summary(2).and_then(|c| c.start_override_secs);
+        f.h.key_press(egui::Key::Space);
+        let s2 = first_read_secs(&mut f, 2);
+        assert!(ov2.is_none() && s2 < 0.9, "jump={jump}: la cue 2 arrancó en {s2:.2} s (cue 1 desde {s1:.2})");
+    }
+}
+
+#[test]
+fn space_after_clicking_a_memory_in_the_panel_fires_the_next_cue_and_does_not_rearm_it() {
+    let mut f = fixture("mempanelgo");
+    with_memory_on(&mut f, 1, 1.0);
+    {
+        let a = app_mut(&mut f.h);
+        a.select(1);
+    }
+    {
+        let d = app_mut(&mut f.h).inspector.draft.as_mut().unwrap();
+        d.node.body.audio_mut().unwrap().time_loops.memories[0].name = "estribillo".into();
+    }
+    pump(&mut f.h, "nombre guardado", |a| a.inspector.draft.as_ref().is_some_and(|d| !d.dirty()) && a.model.summary(1).is_some_and(|c| c.memories[0].name == "estribillo"));
+    app_mut(&mut f.h).memories_open = true;
+    f.h.step();
+    f.h.step();
+    f.h.query_all_by_label_contains("estribillo").find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).unwrap().click();
+    pump(&mut f.h, "armada", |a| a.model.summary(1).is_some_and(|c| c.start_override_secs == Some(1.0)));
+    for _ in 0..10 { f.h.step(); }
+    f.h.key_press(egui::Key::Space);
+    assert!(first_read_secs(&mut f, 1) > 0.9, "la 1 suena desde la memoria");
+    pump(&mut f.h, "la 1 termina", |a| a.model.state_of(1) == CueUiState::Completed && a.memory_arms_for_test() == 0);
+    for _ in 0..20 { f.h.step(); }
+    f.h.key_press(egui::Key::Space);
+    for _ in 0..40 { f.h.step(); std::thread::sleep(Duration::from_millis(5)); }
+    let a = app(&f.h);
+    assert_eq!(a.model.state_of(1), CueUiState::Completed, "el GO no vuelve a la cue 1");
+    assert!(a.model.summary(1).is_some_and(|c| c.start_override_secs.is_none()), "la memoria de la cue 1 no se vuelve a armar");
+}
+
+#[test]
+fn a_memory_chosen_and_abandoned_for_another_cue_is_dropped() {
+    let mut f = fixture("memaway");
+    with_memory(&mut f, 1.0, "mitad");
+    {
+        let ctx = f.h.ctx.clone();
+        app_mut(&mut f.h).activate_memory_for_test(&ctx, 1, 1.0);
+    }
+    pump(&mut f.h, "armada", |a| a.model.summary(1).is_some_and(|c| c.start_override_secs == Some(1.0)) && a.model.playhead == Some(1));
+    f.h.key_press(egui::Key::ArrowDown);
+    pump(&mut f.h, "la memoria se cae", |a| a.memory_arms_for_test() == 0 && a.model.summary(1).is_some_and(|c| c.start_override_secs.is_none()));
+    f.h.key_press(egui::Key::ArrowUp);
+    pump(&mut f.h, "playhead en 1", |a| a.model.playhead == Some(1));
+    f.h.key_press(egui::Key::Space);
+    assert!(first_read_secs(&mut f, 1) < 0.9, "suena desde el principio");
+}

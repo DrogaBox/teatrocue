@@ -301,6 +301,7 @@ impl IpcContext {
         if let Some(base) = path.parent() {
             show.relativize_media_paths(base);
         }
+        show.clear_start_points();
         show.validate().map_err(|e| format!("el show no es válido: {e}"))?;
         let json = show.to_json();
         let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("json")));
@@ -470,6 +471,7 @@ impl IpcContext {
         if let Some(e) = errors.first() {
             return Err(format!("no se pudo copiar {e}"));
         }
+        show.clear_start_points();
         show.validate().map_err(|e| format!("el show no es válido: {e}"))?;
         let stem: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') { c } else { '_' }).collect();
         let file = dir.join(format!("{}.teatroshow", if stem.trim().is_empty() { "show" } else { stem.trim() }));

@@ -117,12 +117,10 @@ pub enum ClientRequest {
     Shutdown,
 }
 
-/// Lo que el ensayo cambió en vivo y no tiene que quedar en el show guardado.
+/// Lo que el ensayo cambió en vivo y no tiene que quedar en el show guardado. Los arranques desde una memoria o
+/// «retomar» no van aquí: el show guardado nunca los lleva (`ShowFile::clear_start_points`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RehearsalState {
-    /// Arranque con el que se escribe cada cue (deshace «retomar al parar» y las memorias armadas).
-    #[serde(default)]
-    pub start_points: Vec<(u64, Option<f64>)>,
     /// Tiempos y bucles originales de una cue con bucle de ensayo. Las memorias se toman del show en vivo (las marcadas
     /// durante el bucle se conservan).
     #[serde(default)]
@@ -131,7 +129,7 @@ pub struct RehearsalState {
 
 impl RehearsalState {
     pub fn is_empty(&self) -> bool {
-        self.start_points.is_empty() && self.time_loops.is_empty()
+        self.time_loops.is_empty()
     }
 
     /// Aplica lo de arriba a las cues de un show exportado.
@@ -154,9 +152,6 @@ impl RehearsalState {
                 let memories = std::mem::take(&mut t.memories);
                 *t = original.clone();
                 t.memories = memories;
-            }
-            if let Some(&(_, start)) = self.start_points.iter().find(|(c, _)| *c == id) {
-                t.start_override_secs = start;
             }
         });
     }
@@ -423,8 +418,7 @@ mod tests {
             time_loops.infinite_loop = true;
             time_loops.memories = vec![crate::cue_dto::MemoryMark { secs: 3.0, name: "m".into(), note: String::new() }];
         }
-        let original = crate::cue_dto::AudioTimeAndLoopsData { start_override_secs: Some(12.0), ..Default::default() };
-        let state = RehearsalState { start_points: vec![(4, None)], time_loops: vec![(4, original)] };
+        let state = RehearsalState { time_loops: vec![(4, Default::default())] };
         let mut cues = vec![cue];
         state.apply_to(&mut cues);
         let t = &cues[0].body.audio().unwrap().time_loops;

@@ -349,9 +349,20 @@ impl CueNodeDto {
 
 impl ShowFile {
     pub fn from_json(json: &str) -> Result<Self, ShowError> {
-        let show: ShowFile = serde_json::from_str(json)?;
+        let mut show: ShowFile = serde_json::from_str(json)?;
         show.validate()?;
+        show.clear_start_points();
         Ok(show)
+    }
+
+    /// Quita el «arrancar desde» de todas las cues. Elegir una memoria es cosa del ensayo y vale para un solo GO: un show
+    /// nunca lo guarda ni lo trae (los guardados con versiones anteriores sí podían llevarlo).
+    pub fn clear_start_points(&mut self) {
+        self.walk_mut(|n| {
+            if let Some(a) = n.body.audio_mut() {
+                a.time_loops.start_override_secs = None;
+            }
+        });
     }
 
     pub fn to_json(&self) -> String {

@@ -1,18 +1,19 @@
 ﻿TeatroCue - CAMBIOS
 ===================
 
-Versión del 01/11/2026, comparada con la del 21/10/2026.
+Versión del 03/11/2026, comparada con la del 21/10/2026.
 Los shows guardados se abren igual que antes; no hace falta cambiar nada en ellos.
 
 
 NUEVO
 -----
 
-1. Saltar a una memoria sirve para un solo GO
-   Al elegir una memoria, la cue queda lista para arrancar desde ese punto. Cuando esa cue
-   termina o se para, vuelve a su arranque de siempre: la próxima vez que se llegue a ella
-   (por ejemplo, al pasar de largo hacia el tema siguiente y volver) suena desde el principio.
-   Si mientras tanto se puso a mano otro punto de arranque, se respeta.
+1. Las memorias son solo para el ensayo: en el show todo arranca desde el principio
+   Al elegir una memoria (o "Arrancar aquí"), la cue queda lista para arrancar desde ese
+   punto en el próximo GO, y nada más. Cuando esa cue termina o se para, vuelve a su
+   principio. Si se elige una memoria y se pasa a otra cue sin dispararla, la memoria se
+   cae. El show guardado nunca guarda una memoria elegida, y si un show viejo traía una,
+   al abrirlo se ignora: al pasar de una cue a la siguiente, siempre suena desde el inicio.
 
 2. Fundidos para ballet
    Cada cue de audio tiene, en Time & Loops > "Fundidos de la cue", un fundido de Entrada

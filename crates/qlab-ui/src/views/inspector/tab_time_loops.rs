@@ -425,11 +425,11 @@ pub fn show(ui: &mut Ui, d: &mut Draft, cx: &mut TabCtx, out: &mut InspectorOutp
     });
 
     slice_list(ui, t, duration);
-    memory_list(ui, t, duration, &mut edit_cursor, edit_id, cx.preroll);
+    memory_list(ui, cue_id, t, duration, &mut edit_cursor, edit_id);
 }
 
 /// Lista de memorias: número, nombre, posición, nota, «Ir» (lleva el cursor de edición) y quitar.
-fn memory_list(ui: &mut Ui, t: &mut AudioTimeAndLoopsData, duration: f64, edit_cursor: &mut Option<f64>, edit_id: egui::Id, preroll: u8) {
+fn memory_list(ui: &mut Ui, cue_id: u64, t: &mut AudioTimeAndLoopsData, duration: f64, edit_cursor: &mut Option<f64>, edit_id: egui::Id) {
     let sr = t.file_sample_rate.max(1);
     egui::CollapsingHeader::new(RichText::new(format!("Memorias ({})", t.memories.len())).color(MEMORY_COLOR)).id_salt("memories_header").default_open(!t.memories.is_empty()).show(ui, |ui| {
         ui.label(RichText::new("«Marcar memoria» o la tecla M marcan un punto del audio (donde suena o donde está el cursor); póngale nombre y nota. No cambian la reproducción.").small().color(theme::TEXT_DIM));
@@ -457,7 +457,7 @@ fn memory_list(ui: &mut Ui, t: &mut AudioTimeAndLoopsData, duration: f64, edit_c
                 if ui.small_button("Ir").on_hover_text("Lleva el cursor de edición a este punto").clicked() {
                     go = Some(m.secs);
                 }
-                if ui.small_button("Arrancar aquí").on_hover_text("La cue empezará desde este punto al dispararla (GO / Espacio)").clicked() {
+                if ui.small_button("Arrancar aquí").on_hover_text("La cue empezará desde este punto en el próximo GO (Espacio); después vuelve a su inicio").clicked() {
                     start_here = Some(m.secs);
                 }
                 if ui.small_button("x").on_hover_text("Quitar").clicked() {
@@ -472,10 +472,8 @@ fn memory_list(ui: &mut Ui, t: &mut AudioTimeAndLoopsData, duration: f64, edit_c
             t.start_override_secs = None;
         }
         if let Some(s) = start_here {
-            let s = crate::views::memories::preroll_start(s, preroll);
-            t.start_override_secs = Some(s);
-            *edit_cursor = Some(s);
-            ui.data_mut(|d| d.insert_temp(edit_id, s));
+            // Igual que elegir la memoria en el panel o en la onda: vale para un GO (la app aplica el pre-roll).
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::NULL.with("memory_activate"), (cue_id, s)));
         }
         if let Some(s) = go {
             *edit_cursor = Some(s);
