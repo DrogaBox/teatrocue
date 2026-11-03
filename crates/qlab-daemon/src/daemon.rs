@@ -97,9 +97,10 @@ impl Daemon {
         // Auriculares: en otra placa son un par de canales internos extra al final de la mezcla; en la misma placa, el par
         // `monitor_first` elegido.
         let monitor_slot = match cfg.backend.separate_monitor_device() {
-            Some(_) => Some(cfg.backend.channels),
+            Some(_) => u16::try_from(cfg.backend.monitor_bus_first()).ok(),
             None => cfg.monitor_first,
         };
+        health.main_channels.store(u32::from(cfg.backend.channels), std::sync::atomic::Ordering::Relaxed);
         health.monitor_first.store(monitor_slot.map_or(0, |m| u32::from(m) + 1), std::sync::atomic::Ordering::Relaxed);
         let events = Arc::new(EventHub::new());
         let shm = Arc::new(SharedMemory::create(&cfg.shm_name).map_err(DaemonError::SharedMemory)?);
@@ -128,6 +129,15 @@ impl Daemon {
         if let Some(m) = &info.monitor_device {
             log(format!("auriculares (PFL): salida independiente `{m}`"));
         }
+        // Las salidas adicionales que no abrieron no se pierden: lo que se mande ahí sale por la principal.
+        let mut down = Vec::new();
+        for (k, opened) in info.extra_outputs.iter().enumerate() {
+            match opened {
+                Some(d) => log(format!("Salida {}: `{d}`", k + 2)),
+                None => down.push(cfg.backend.extra_output_first(k)),
+            }
+        }
+        loader.lock().expect("envenenado").set_down_outputs(down);
         for w in &info.warnings {
             log(format!("aviso: {w}"));
         }

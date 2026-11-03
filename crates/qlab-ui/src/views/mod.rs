@@ -47,6 +47,7 @@ pub enum Action {
     Duplicate,
     /// Volumen maestro en dB (−60 o menos = silencio).
     SetMasterDb(f32),
+    SetMasterMono(bool),
     Redo,
     /// Archivo → Empaquetar show…: copia los medios y guarda el show en una carpeta autocontenida.
     BundleShow,
@@ -85,6 +86,8 @@ pub struct ViewCtx<'a> {
     pub safe_mute: bool,
     /// Volumen maestro actual en dB.
     pub master_db: f32,
+    /// Maestro en mono.
+    pub master_mono: bool,
     /// Se debe desplazar la tabla hasta la cue seleccionada.
     pub scroll_to_selected: bool,
 }

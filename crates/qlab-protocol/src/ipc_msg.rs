@@ -41,6 +41,9 @@ pub enum ClientRequest {
     ApplyEmergencyKey { key: String },
     /// Volumen maestro en dB (−60 o menos = silencio, máximo +6). No se guarda con el show.
     SetMasterDb { db: f32 },
+    /// Maestro en mono: suma izquierda y derecha y manda lo mismo por las dos fichas de cada salida (no toca los
+    /// auriculares). Para cuando se usa una sola ficha de la consola y no se quiere perder lo paneado al otro lado.
+    SetMasterMono { on: bool },
     /// Fundidos globales: «Parar todo» (y Stop de control) y Panic, en segundos (0 a 30). La parada dura no cambia.
     SetStopFades { stop_secs: f32, panic_secs: f32 },
     /// Bloqueo de función de la interfaz: mientras está activo, el control remoto OSC solo acepta paradas.
@@ -95,7 +98,16 @@ pub enum ClientRequest {
     ExportCueSheet { path: String, name: String, durations: Vec<(u64, f64)>, generated: String },
     /// Prepara el reproductor independiente `slot` (botonera de Carts o audición) con un archivo: no suena todavía.
     /// `monitor`: sale solo por la salida de auriculares (PFL) y no por la sala. `start_secs`: desde dónde suena.
-    AdhocLoad { slot: u32, path: String, gain_db: f32, monitor: bool, start_secs: f64 },
+    AdhocLoad {
+        slot: u32,
+        path: String,
+        gain_db: f32,
+        monitor: bool,
+        start_secs: f64,
+        /// Por dónde sale (pads de Carts). No cuenta con `monitor`.
+        #[serde(default, skip_serializing_if = "crate::matrix::OutputRoute::is_default")]
+        route: crate::matrix::OutputRoute,
+    },
     /// Reemplaza la botonera de Carts del show abierto (se guarda con el show).
     SetCarts { bank: crate::cue_dto::CartBank },
     /// Pide la botonera de Carts del show abierto.

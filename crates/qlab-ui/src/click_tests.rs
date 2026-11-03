@@ -3385,3 +3385,15 @@ fn a_memory_chosen_and_abandoned_for_another_cue_is_dropped() {
     f.h.key_press(egui::Key::Space);
     assert!(first_read_secs(&mut f, 1) < 0.9, "suena desde el principio");
 }
+
+#[test]
+fn the_mono_button_puts_the_master_in_mono_and_remembers_it() {
+    let mut f = fixture("mono");
+    assert!(!app(&f.h).prefs.master_mono);
+    f.h.get_by_label("MONO").click();
+    let health = f._daemon.health();
+    pump(&mut f.h, "motor en mono", |a| a.prefs.master_mono && health.master_mono.load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(app(&f.h).hud_text(), Some("Salida en MONO: lo mismo por las dos fichas"));
+    f.h.get_by_label("MONO").click();
+    pump(&mut f.h, "de vuelta en estéreo", |a| !a.prefs.master_mono && !health.master_mono.load(std::sync::atomic::Ordering::Relaxed));
+}

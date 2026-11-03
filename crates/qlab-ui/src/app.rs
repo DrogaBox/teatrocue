@@ -560,6 +560,7 @@ impl QlabApp {
                     self.request_cues();
                     self.request_carts();
                     self.link.fire(ClientRequest::SetMasterDb { db: self.master_db });
+                    self.link.fire(ClientRequest::SetMasterMono { on: self.prefs.master_mono });
                     self.send_stop_fades();
                     self.link.fire(ClientRequest::SetShowLock { on: self.locked });
                     if let Some(path) = self.reload_show_after_connect.take() {
@@ -1158,6 +1159,12 @@ impl QlabApp {
             Action::SetMasterDb(db) => {
                 self.master_db = db.clamp(-60.0, 6.0);
                 self.link.fire(ClientRequest::SetMasterDb { db: self.master_db });
+            }
+            Action::SetMasterMono(on) => {
+                self.prefs.master_mono = on;
+                self.link.fire(ClientRequest::SetMasterMono { on });
+                self.hud(if on { "Salida en MONO: lo mismo por las dos fichas" } else { "Salida en estéreo" });
+                self.prefs_changed();
             }
             Action::Undo => self.replay_history(true),
             Action::Redo => self.replay_history(false),
@@ -1794,7 +1801,7 @@ impl QlabApp {
         let Some(pad) = self.carts.bank.pads.get(i).filter(|p| !p.is_empty()).cloned() else { return };
         self.carts.duration[i] = None;
         let tag = self.new_tag(Pending::CartLoad(i));
-        self.link.request(tag, ClientRequest::AdhocLoad { slot: i as u32, path: pad.path, gain_db: pad.gain_db, monitor: false, start_secs: 0.0 });
+        self.link.request(tag, ClientRequest::AdhocLoad { slot: i as u32, path: pad.path, gain_db: pad.gain_db, monitor: false, start_secs: 0.0, route: pad.route });
     }
 
     fn cart_play(&mut self, i: usize) {
@@ -3391,7 +3398,7 @@ impl QlabApp {
             ConnState::Connected(h) => Some(h.clone()),
             _ => None,
         };
-        let view = ViewCtx { model: &self.model, telemetry: &self.telemetry, hello: hello.as_ref(), safe_mute: self.safe_mute, master_db: self.master_db, scroll_to_selected: std::mem::take(&mut self.scroll_to_selected) };
+        let view = ViewCtx { model: &self.model, telemetry: &self.telemetry, hello: hello.as_ref(), safe_mute: self.safe_mute, master_db: self.master_db, master_mono: self.prefs.master_mono, scroll_to_selected: std::mem::take(&mut self.scroll_to_selected) };
 
         if let Some(reason) = &self.audio_lost {
             egui::Panel::top("sin_audio").show(ui, |ui| Self::audio_lost_banner(ui, reason, actions));

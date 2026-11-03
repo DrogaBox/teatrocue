@@ -106,6 +106,14 @@ fn master_row(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>, m: &Metrics) 
         }
         let reading = if v.master_db <= -60.0 { "-inf".to_string() } else { format!("{:.1} dB", v.master_db) };
         ui.add_sized([MASTER_READOUT_WIDTH, 18.0], egui::Label::new(RichText::new(reading).monospace().color(if tuned { theme::AMBER } else { theme::TEXT })).extend());
+        let mono = RichText::new("MONO").small().strong().color(if v.master_mono { Color32::BLACK } else { theme::TEXT_DIM });
+        if ui
+            .add(egui::Button::new(mono).fill(if v.master_mono { theme::AMBER } else { theme::PANEL_RAISED }))
+            .on_hover_text("Maestro en mono: suma izquierda y derecha y manda lo mismo por las dos fichas de salida. Sirve cuando se usa una sola ficha de la consola: así no se pierde lo que viene paneado al otro lado (por ejemplo, los violines). Los auriculares siguen en estéreo")
+            .clicked()
+        {
+            actions.push(Action::SetMasterMono(!v.master_mono));
+        }
         ui.add_space(6.0);
         master_meters(ui, v, m);
     });

@@ -80,9 +80,15 @@ pub struct Health {
     pub safe_mute: AtomicBool,
     /// Volumen maestro en décimas de dB (0 = sin cambio). `MASTER_MUTE_X10` o menos = silencio total.
     pub master_db_x10: AtomicI32,
+    /// Maestro en mono (ver `ClientRequest::SetMasterMono`).
+    pub master_mono: AtomicBool,
     /// Salida de auriculares (PFL): índice del primer canal del par **más uno** (0 = sin salida de auriculares).
     /// El volumen maestro no la toca.
     pub monitor_first: std::sync::atomic::AtomicU32,
+    /// Salidas adicionales abiertas: bit `k` = «Salida k+2».
+    pub extra_outputs_live: std::sync::atomic::AtomicU32,
+    /// Canales de la placa principal (las salidas adicionales empiezan después).
+    pub main_channels: std::sync::atomic::AtomicU32,
     pub audio_stalled: AtomicBool,
     pub sequencer_stalled: AtomicBool,
     /// El watchdog pide al hilo principal reiniciar el stream de audio.

@@ -2,7 +2,7 @@
 //! (sale solo por los auriculares). Cada uno es una voz del motor con un id fuera del rango de las cues y con su propia
 //! matriz de niveles; el playhead y el Standby ni se enteran.
 
-use qlab_protocol::matrix::{AudioLevelMatrixData, MatrixCell, MAX_INPUT_CHANNELS, MAX_VOLUME_DB, MIN_VOLUME_DB, MONO_CENTER_DB};
+use qlab_protocol::matrix::{AudioLevelMatrixData, MatrixCell, OutputRoute, MAX_INPUT_CHANNELS, MAX_VOLUME_DB, MIN_VOLUME_DB, MONO_CENTER_DB};
 
 /// Las cues usan ids pequeños y crecientes; los reproductores independientes viven por encima de este.
 pub const ADHOC_BASE: u64 = 1 << 48;
@@ -48,9 +48,28 @@ pub fn levels(file_channels: usize, device_channels: usize, first_out: usize, ga
     AudioLevelMatrixData { inputs: inputs as u8, outputs: outputs as u8, cells, mute_mask: 0, solo_mask: 0 }
 }
 
+/// Matriz de un pad de Carts que sale por `route` (placa y fichas; ver [`OutputRoute`]). `main_channels`: canales de
+/// la placa principal. `gain_db` es el volumen propio del pad.
+pub fn routed_levels(file_channels: usize, device_channels: usize, main_channels: usize, route: OutputRoute, gain_db: f32) -> AudioLevelMatrixData {
+    let mut m = AudioLevelMatrixData::new_one_to_one(file_channels.clamp(1, MAX_INPUT_CHANNELS), device_channels.max(1)).expect("dimensiones en rango");
+    m.cells[0] = MatrixCell::new(gain_db.clamp(MIN_VOLUME_DB, MAX_VOLUME_DB));
+    m.apply_route(route, main_channels);
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pad_can_go_to_one_jack_of_the_main_card_or_to_another_card() {
+        use qlab_protocol::matrix::RouteSide;
+        let left = routed_levels(2, 4, 2, OutputRoute { output: 0, side: RouteSide::First }, -2.0);
+        assert!(left.validate().is_ok());
+        assert_eq!((db(&left, 0, 0), db(&left, 1, 1), db(&left, 2, 1), db(&left, 1, 2)), (-2.0, MONO_CENTER_DB, MONO_CENTER_DB, MIN_VOLUME_DB));
+        let other = routed_levels(1, 4, 2, OutputRoute { output: 1, side: RouteSide::Both }, 0.0);
+        assert_eq!((db(&other, 1, 3), db(&other, 1, 4), db(&other, 1, 1)), (MONO_CENTER_DB, MONO_CENTER_DB, MIN_VOLUME_DB));
+    }
 
     fn db(m: &AudioLevelMatrixData, row: usize, col: usize) -> f32 {
         m.cells[row * (m.outputs as usize + 1) + col].db

@@ -860,11 +860,14 @@ pub struct CartPad {
     /// Atajo de teclado: una tecla del teclado (`1`…`9`, `A`…`Z`, `F1`…`F12`); vacío = sin atajo.
     pub key: String,
     pub mode: CartMode,
+    /// Por dónde sale: placa y fichas. Los shows de antes no lo traen (sale por la principal, por las dos fichas).
+    #[serde(skip_serializing_if = "crate::matrix::OutputRoute::is_default")]
+    pub route: crate::matrix::OutputRoute,
 }
 
 impl Default for CartPad {
     fn default() -> Self {
-        Self { path: String::new(), name: String::new(), color: CueColor::None, gain_db: 0.0, key: String::new(), mode: CartMode::default() }
+        Self { path: String::new(), name: String::new(), color: CueColor::None, gain_db: 0.0, key: String::new(), mode: CartMode::default(), route: Default::default() }
     }
 }
 

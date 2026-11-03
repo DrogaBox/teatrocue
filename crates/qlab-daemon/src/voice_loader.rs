@@ -62,6 +62,8 @@ pub struct VoiceLoader {
     disk: DiskStreamerPool,
     device_channels: usize,
     loaded: HashMap<CueId, LoadedInfo>,
+    /// Primer canal de la mezcla de cada salida adicional sin placa: lo que la cue mande ahí sale por la principal.
+    down_outputs: Vec<usize>,
 }
 
 impl VoiceLoader {
@@ -71,7 +73,14 @@ impl VoiceLoader {
             disk: DiskStreamerPool::new(disk_threads),
             device_channels: device_channels.clamp(1, MAX_OUTPUT_CHANNELS),
             loaded: HashMap::new(),
+            down_outputs: Vec::new(),
         }
+    }
+
+    /// Salidas adicionales sin placa (no conectada o que no abrió), por el primer canal de su par en la mezcla. Vale
+    /// para las voces que se carguen desde ahora.
+    pub fn set_down_outputs(&mut self, firsts: Vec<usize>) {
+        self.down_outputs = firsts;
     }
 
     /// Asa de lectura que usa el callback de audio.
@@ -134,7 +143,7 @@ impl VoiceLoader {
             path,
             &StreamConfig { start_frame: start, extra_pinned_starts: extra_pinned, ..Default::default() },
         )?;
-        let matrix = build_matrix(info.channels, self.device_channels, levels);
+        let matrix = build_matrix(info.channels, self.device_channels, levels, &self.down_outputs);
         let rt = VoiceRtState::new(start, &segments, matrix).map_err(LoadError::Voice)?;
         let voice = Voice::with_reader(
             VoiceInit {
@@ -200,7 +209,7 @@ fn compile_segments(t: &AudioTimeAndLoopsData, start: u64, end: u64) -> Result<V
 
 /// Matriz en vivo `M × N`: la de fábrica de una cue (uno-a-uno; un archivo mono, al centro de las dos primeras salidas),
 /// con las celdas de `levels` encima si las hay.
-fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&AudioLevelMatrixData>) -> AudioLevelMatrixRt {
+fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&AudioLevelMatrixData>, down_outputs: &[usize]) -> AudioLevelMatrixRt {
     let m = file_channels.clamp(1, MAX_INPUT_CHANNELS);
     let mut matrix = AudioLevelMatrixRt::new(m, device_channels);
     let default = levels.is_none().then(|| AudioLevelMatrixData::new_one_to_one(m, matrix.out_channels).ok()).flatten();
@@ -212,6 +221,7 @@ fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&Au
                     matrix.base_db[row][col] = l.cells[row * cols + col].db;
                 }
             }
+            fold_down_outputs(&mut matrix, down_outputs);
             matrix.mute_mask = l.mute_mask;
             matrix.solo_mask = l.solo_mask;
             matrix.matrix_dirty = true;
@@ -220,6 +230,25 @@ fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&Au
         }
     }
     matrix
+}
+
+/// Lo que la cue manda a una salida adicional sin placa va a la principal: cada ficha del par caído se pasa a la misma
+/// ficha de la principal (la mayor de las dos ganancias, sin subir el nivel). Mejor que callar en plena función.
+fn fold_down_outputs(matrix: &mut AudioLevelMatrixRt, down_outputs: &[usize]) {
+    let outs = matrix.out_channels;
+    for &first in down_outputs {
+        for side in 0..2 {
+            let (dead, live) = (first + side + 1, (side + 1).min(outs));
+            if dead > outs {
+                continue;
+            }
+            for row in 1..=matrix.in_channels {
+                let db = matrix.base_db[row][dead];
+                matrix.base_db[row][live] = matrix.base_db[row][live].max(db);
+                matrix.base_db[row][dead] = qlab_protocol::matrix::MIN_VOLUME_DB;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -352,6 +381,24 @@ mod tests {
         let row = &rt.matrix.target_crosspoint_lin[0];
         assert!((row[0] - center).abs() < 1e-6 && (row[1] - center).abs() < 1e-6, "{:?}", &row[..6]);
         assert!(row[2..6].iter().all(|&g| g == 0.0), "el resto de las salidas en silencio: {:?}", &row[..6]);
+    }
+
+    #[test]
+    fn a_cue_sent_to_an_extra_output_without_a_card_plays_through_the_main_one() {
+        let wav = write_wav("down", 2, 4_800, 48_000, |_, _| 0.1);
+        let _c = Cleanup(vec![wav.clone()]);
+        let mut levels = AudioLevelMatrixData::new_one_to_one(2, 4).unwrap();
+        levels.apply_route(qlab_protocol::matrix::OutputRoute { output: 1, side: qlab_protocol::matrix::RouteSide::Both }, 2);
+        let mut l = VoiceLoader::new(1, 4);
+        l.load_path(CueId(1), &wav, &time(0.0, 0.0), Some(&levels)).unwrap();
+        // SAFETY: la voz no está publicada al callback en esta prueba.
+        let up = unsafe { l.voice(CueId(1)).unwrap().rt_mut() }.matrix.target_crosspoint_lin;
+        assert_eq!((up[0][2], up[1][3], up[0][0]), (1.0, 1.0, 0.0), "con placa: sale por la Salida 2");
+        l.set_down_outputs(vec![2]);
+        l.load_path(CueId(1), &wav, &time(0.0, 0.0), Some(&levels)).unwrap();
+        // SAFETY: ídem.
+        let down = unsafe { l.voice(CueId(1)).unwrap().rt_mut() }.matrix.target_crosspoint_lin;
+        assert_eq!((down[0][0], down[1][1], down[0][2], down[1][3]), (1.0, 1.0, 0.0, 0.0), "sin placa: sale por la principal");
     }
 
     #[test]

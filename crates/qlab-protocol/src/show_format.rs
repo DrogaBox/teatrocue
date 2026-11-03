@@ -801,7 +801,7 @@ mod tests {
         use crate::cue_dto::{CartMode, CartPad, CueColor};
         let mut s = show(vec![]);
         assert!(!s.to_json().contains("carts"), "sin pads no se escribe nada");
-        s.carts.pads = vec![CartPad { path: "C:\\fx\\aplauso.wav".into(), name: "Aplauso".into(), color: CueColor::Green, gain_db: -3.0, key: "f5".into(), mode: CartMode::Hold }];
+        s.carts.pads = vec![CartPad { path: "C:\\fx\\aplauso.wav".into(), name: "Aplauso".into(), color: CueColor::Green, gain_db: -3.0, key: "f5".into(), mode: CartMode::Hold, route: Default::default() }];
         let json = s.to_json();
         let back = ShowFile::from_json(&json).unwrap();
         assert_eq!(back.carts.pads[0].mode, CartMode::Hold);

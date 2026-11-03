@@ -68,6 +68,7 @@ struct AdhocParams {
     gain_db: f32,
     monitor: bool,
     start_secs: f64,
+    route: qlab_protocol::matrix::OutputRoute,
 }
 
 pub struct IpcContext {
@@ -329,7 +330,16 @@ impl IpcContext {
         };
         let probe = VoiceLoader::probe(Path::new(&p.path)).map_err(|e| e.to_string())?;
         let mut loader = self.loader.lock().expect("envenenado");
-        let levels = crate::adhoc::levels(probe.channels, loader.device_channels(), first_out, p.gain_db);
+        let levels = if p.monitor {
+            crate::adhoc::levels(probe.channels, loader.device_channels(), first_out, p.gain_db)
+        } else {
+            // Una salida adicional sin placa: el pad sale por la principal, por las mismas fichas.
+            let mut route = p.route;
+            if route.output > 0 && self.health.extra_outputs_live.load(Ordering::Relaxed) & (1 << (route.output - 1)) == 0 {
+                route.output = 0;
+            }
+            crate::adhoc::routed_levels(probe.channels, loader.device_channels(), self.health.main_channels.load(Ordering::Relaxed) as usize, route, p.gain_db)
+        };
         let time = AudioTimeAndLoopsData { start_time_sec: p.start_secs.max(0.0), file_sample_rate: probe.sample_rate, ..Default::default() };
         let id = CueId(crate::adhoc::voice_id(slot));
         loader.load_path(id, Path::new(&p.path), &time, Some(&levels)).map_err(|e| e.to_string())?;
@@ -366,7 +376,7 @@ impl IpcContext {
         let path = node.basics.file_target.as_ref().map(|t| t.absolute_path.clone()).filter(|p| !p.is_empty()).ok_or("la cue no tiene archivo")?;
         let start = start_secs.unwrap_or_else(|| audio.time_loops.start_override_secs.unwrap_or(audio.time_loops.start_time_sec));
         let slot = crate::adhoc::AUDITION_SLOT;
-        let loaded = self.adhoc_load(slot, AdhocParams { path, gain_db: 0.0, monitor: true, start_secs: start })?;
+        let loaded = self.adhoc_load(slot, AdhocParams { path, gain_db: 0.0, monitor: true, start_secs: start, route: Default::default() })?;
         *self.audition_cue.lock().expect("envenenado") = Some(cue_id);
         self.adhoc_play(slot, Some(qlab_core::cue::eq_params(&audio.eq)))?;
         Ok(loaded)
@@ -557,13 +567,19 @@ impl IpcContext {
                 self.health.master_db_x10.store(x10, Ordering::Relaxed);
                 ServerResponse::Ok
             }
+            ClientRequest::SetMasterMono { on } => {
+                self.health.master_mono.store(on, Ordering::Relaxed);
+                ServerResponse::Ok
+            }
             ClientRequest::CueAction { cue_id, action } => {
                 use crate::cue_edit::control_action_from_dto;
                 ok_or(self.send_seq(SeqCommand::CueAction(CueId(cue_id), control_action_from_dto(action))))
             }
             ClientRequest::ApplyEmergencyKey { key } => self.apply_emergency_key(&key).unwrap_or_else(|message| ServerResponse::Error { message }),
             ClientRequest::NewShow => self.new_show().unwrap_or_else(|message| ServerResponse::Error { message }),
-            ClientRequest::AdhocLoad { slot, path, gain_db, monitor, start_secs } => self.adhoc_load(slot, AdhocParams { path, gain_db, monitor, start_secs }).unwrap_or_else(|message| ServerResponse::Error { message }),
+            ClientRequest::AdhocLoad { slot, path, gain_db, monitor, start_secs, route } => {
+                self.adhoc_load(slot, AdhocParams { path, gain_db, monitor, start_secs, route }).unwrap_or_else(|message| ServerResponse::Error { message })
+            }
             ClientRequest::SetCarts { bank } => {
                 *self.carts.lock().expect("envenenado") = bank.clamped();
                 ServerResponse::Ok

@@ -1152,7 +1152,7 @@ fn independent_players_reach_the_room_or_only_the_headphones_without_moving_the_
     assert_eq!(playhead(&c), Some(1));
 
     // Audición (PFL): solo los canales 3-4.
-    match req(&c, ClientRequest::AdhocLoad { slot: 20, path: path.clone(), gain_db: 0.0, monitor: true, start_secs: 0.0 }) {
+    match req(&c, ClientRequest::AdhocLoad { slot: 20, path: path.clone(), gain_db: 0.0, monitor: true, start_secs: 0.0, route: Default::default() }) {
         ServerResponse::AdhocLoaded { slot: 20, duration: Some(d) } => assert!((d - 2.0).abs() < 0.01, "{d}"),
         other => panic!("{other:?}"),
     }
@@ -1168,7 +1168,7 @@ fn independent_players_reach_the_room_or_only_the_headphones_without_moving_the_
     wait_until("silencio tras detener", || peak(&ui, 2, 2) < 1e-4);
 
     // Pad de Carts: sala (canales 1-2), con su propio volumen (−6 dB) y sin sonar en los auriculares.
-    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: path.clone(), gain_db: -6.0, monitor: false, start_secs: 0.0 }), ServerResponse::AdhocLoaded { slot: 0, .. }));
+    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: path.clone(), gain_db: -6.0, monitor: false, start_secs: 0.0, route: Default::default() }), ServerResponse::AdhocLoaded { slot: 0, .. }));
     assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 0 }), ServerResponse::Ok);
     wait_until("suena en la sala a −6 dB", || (peak(&ui, 0, 3) - 0.25 * 10f32.powf(-6.0 / 20.0)).abs() < 0.01);
     assert!(peak(&ui, 2, 4) < 1e-4, "la sala no entra en los auriculares");
@@ -1181,7 +1181,7 @@ fn independent_players_reach_the_room_or_only_the_headphones_without_moving_the_
     // Nada de esto movió la lista de cues.
     assert_eq!(playhead(&c), Some(1));
     // Sin salida de auriculares configurada la audición se rechaza con un mensaje útil.
-    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 99, path: path.clone(), gain_db: 0.0, monitor: false, start_secs: 0.0 }), ServerResponse::Error { .. }), "ranura fuera de rango");
+    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 99, path: path.clone(), gain_db: 0.0, monitor: false, start_secs: 0.0, route: Default::default() }), ServerResponse::Error { .. }), "ranura fuera de rango");
     assert_eq!(daemon.health().rt_alloc_violations.load(Ordering::Relaxed), 0);
 }
 
@@ -1202,8 +1202,8 @@ fn panic_stop_all_and_hard_stop_also_silence_the_carts_and_the_audition() {
     let path = wav.to_string_lossy().into_owned();
     for stop in [ClientRequest::Panic, ClientRequest::StopAll, ClientRequest::HardStopAll] {
         // Un pad de Carts en la sala y la audición en los auriculares, sin ninguna cue de la lista sonando.
-        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: path.clone(), gain_db: 0.0, monitor: false, start_secs: 0.0 }), ServerResponse::AdhocLoaded { .. }));
-        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 20, path: path.clone(), gain_db: 0.0, monitor: true, start_secs: 0.0 }), ServerResponse::AdhocLoaded { .. }));
+        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: path.clone(), gain_db: 0.0, monitor: false, start_secs: 0.0, route: Default::default() }), ServerResponse::AdhocLoaded { .. }));
+        assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 20, path: path.clone(), gain_db: 0.0, monitor: true, start_secs: 0.0, route: Default::default() }), ServerResponse::AdhocLoaded { .. }));
         assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 0 }), ServerResponse::Ok);
         assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 20 }), ServerResponse::Ok);
         wait_until("suenan el pad y la audición", || peak(&ui, 0, 2) > 0.2 && peak(&ui, 2, 2) > 0.2);
@@ -1218,7 +1218,7 @@ fn headphone_audition_is_refused_when_no_headphone_output_is_configured() {
     let c = IpcClient::connect(&f.socket).unwrap();
     let wav = write_wav("noph-w", 2, 4_800, 48_000, |_, _| 0.1);
     let _cleanup = Cleanup(vec![wav.clone()]);
-    match req(&c, ClientRequest::AdhocLoad { slot: 20, path: wav.to_string_lossy().into(), gain_db: 0.0, monitor: true, start_secs: 0.0 }) {
+    match req(&c, ClientRequest::AdhocLoad { slot: 20, path: wav.to_string_lossy().into(), gain_db: 0.0, monitor: true, start_secs: 0.0, route: Default::default() }) {
         ServerResponse::Error { message } => assert!(message.contains("auriculares"), "{message}"),
         other => panic!("{other:?}"),
     }
@@ -1302,7 +1302,7 @@ fn headphones_on_another_card_keep_the_room_silent_and_the_audition_works_withou
     assert!(peak(&ui, 0, 6) < 1e-4 && peak(&ui, 1, 6) < 1e-4, "la sala no oye la audición");
     assert_eq!(req(&c, ClientRequest::AuditionStop), ServerResponse::Ok);
     // Un pad de Carts sigue saliendo por la sala.
-    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: daemon_wav_path(&c), gain_db: 0.0, monitor: false, start_secs: 0.0 }), ServerResponse::AdhocLoaded { .. }));
+    assert!(matches!(req(&c, ClientRequest::AdhocLoad { slot: 0, path: daemon_wav_path(&c), gain_db: 0.0, monitor: false, start_secs: 0.0, route: Default::default() }), ServerResponse::AdhocLoaded { .. }));
     assert_eq!(req(&c, ClientRequest::AdhocPlay { slot: 0 }), ServerResponse::Ok);
     wait_until("el pad suena en la sala", || peak(&ui, 0, 3) > 0.2);
     assert_eq!(daemon.health().rt_alloc_violations.load(Ordering::Relaxed), 0);

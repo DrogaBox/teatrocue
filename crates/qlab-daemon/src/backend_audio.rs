@@ -54,6 +54,10 @@ pub struct BackendConfig {
     /// Dispositivo de salida **independiente** para los auriculares (PFL / audición), p. ej. el jack de la notebook o
     /// otra placa USB. `None` (o el mismo que `device`) = los auriculares usan canales extra de la placa principal.
     pub monitor_device: Option<String>,
+    /// Salidas adicionales («Salida 2», «Salida 3», «Salida 4»): otras placas a las que las cues y los pads pueden
+    /// mandar sonido. Cada una es un par estéreo de la mezcla, a continuación de los canales de la principal. Un nombre
+    /// vacío deja la posición sin placa: lo que se mande ahí sale por la principal.
+    pub extra_outputs: Vec<String>,
     pub sample_rate: u32,
     pub channels: u16,
     pub buffer_frames: u32,
@@ -67,22 +71,53 @@ pub struct BackendConfig {
 
 /// Canales internos que se añaden a la mezcla para el bus de auriculares cuando va a otra placa (un par estéreo).
 pub const MONITOR_BUS_CHANNELS: usize = 2;
+/// Salidas adicionales como mucho («Salida 2» a «Salida 4»), un par estéreo cada una.
+pub const MAX_EXTRA_OUTPUTS: usize = 3;
 /// Frames que el bus de auriculares retiene entre las dos placas (≈ 0,34 s a 48 kHz: sobra para la deriva de reloj).
 const MONITOR_RING_FRAMES: usize = 16_384;
 /// Tamaño máximo de un trozo que procesa el callback cuando hay bus de auriculares (se reserva una vez, al abrir).
 const TAP_CHUNK_FRAMES: usize = 4_096;
 
 impl BackendConfig {
+    /// Cuántas salidas adicionales ocupan lugar en la mezcla: hasta la última con nombre, como mucho tres y sin pasarse
+    /// de los canales del motor.
+    pub fn extra_output_slots(&self) -> usize {
+        let named = self.extra_outputs.iter().rposition(|n| !n.trim().is_empty()).map_or(0, |i| i + 1);
+        named.min(MAX_EXTRA_OUTPUTS).min(MAX_OUTPUT_CHANNELS.saturating_sub(usize::from(self.channels)) / MONITOR_BUS_CHANNELS)
+    }
+
+    /// Nombre de la placa de la salida adicional `k` (0 = «Salida 2»), si tiene una.
+    pub fn extra_output(&self, k: usize) -> Option<&str> {
+        (k < self.extra_output_slots()).then(|| self.extra_outputs[k].trim()).filter(|n| !n.is_empty())
+    }
+
+    /// Primer canal de la mezcla (desde 0) del par de la salida adicional `k` (0 = «Salida 2»).
+    pub fn extra_output_first(&self, k: usize) -> usize {
+        usize::from(self.channels) + MONITOR_BUS_CHANNELS * k
+    }
+
+    /// Primer canal de la mezcla del par de auriculares cuando van en otra placa: después de las salidas adicionales.
+    pub fn monitor_bus_first(&self) -> usize {
+        self.extra_output_first(self.extra_output_slots())
+    }
+
     /// El dispositivo de auriculares si es **otra placa** distinta de la principal.
     pub fn separate_monitor_device(&self) -> Option<&str> {
         let m = self.monitor_device.as_deref().map(str::trim).filter(|m| !m.is_empty())?;
         let same = self.device.as_deref().is_some_and(|d| comparable_device_name(d) == comparable_device_name(m));
-        (!same && usize::from(self.channels) + MONITOR_BUS_CHANNELS <= MAX_OUTPUT_CHANNELS).then_some(m)
+        (!same && self.monitor_bus_first() + MONITOR_BUS_CHANNELS <= MAX_OUTPUT_CHANNELS).then_some(m)
     }
 
-    /// Canales con los que se cargan las voces: los de la placa principal más el par de auriculares si va aparte.
+    /// Canales con los que se cargan las voces: los de la placa principal, los pares de las salidas adicionales y el
+    /// de auriculares si va aparte.
     pub fn mix_channels(&self) -> usize {
-        usize::from(self.channels) + if self.separate_monitor_device().is_some() { MONITOR_BUS_CHANNELS } else { 0 }
+        self.monitor_bus_first() + if self.separate_monitor_device().is_some() { MONITOR_BUS_CHANNELS } else { 0 }
+    }
+
+    /// Anillos de los pares que salen por otras placas, en el orden de la mezcla.
+    fn tap_rings(&self) -> Vec<Arc<FrameRing>> {
+        let n = self.extra_output_slots() + usize::from(self.separate_monitor_device().is_some());
+        (0..n).map(|_| FrameRing::new(MONITOR_BUS_CHANNELS, MONITOR_RING_FRAMES)).collect()
     }
 }
 
@@ -93,6 +128,7 @@ impl Default for BackendConfig {
             host: None,
             device: None,
             monitor_device: None,
+            extra_outputs: Vec::new(),
             sample_rate: 48_000,
             channels: 2,
             buffer_frames: 128,
@@ -140,6 +176,8 @@ pub struct BackendInfo {
     pub warnings: Vec<String>,
     /// Placa de auriculares abierta aparte (`None` = no hay o van en canales de la principal).
     pub monitor_device: Option<String>,
+    /// Placa abierta de cada salida adicional (`None` = sin placa o no abrió: lo suyo sale por la principal).
+    pub extra_outputs: Vec<Option<String>>,
 }
 
 impl BackendInfo {
@@ -208,17 +246,18 @@ pub struct RendererParts {
     pub epoch: Epoch,
     pub rt_priority: u8,
     pub alloc_check: bool,
-    /// Anillo por el que el bus de auriculares pasa a la segunda placa (`None` = auriculares en la misma placa).
-    pub monitor_tap: Option<Arc<FrameRing>>,
+    /// Anillos por los que pasan a otras placas los pares que siguen a los canales de la principal: las salidas
+    /// adicionales y, al final, los auriculares si van aparte. Vacío = todo sale por la principal.
+    pub taps: Vec<Arc<FrameRing>>,
 }
 
-/// Bus de auriculares de una placa aparte: el callback principal mezcla `canales + 2` y envía el par extra al anillo.
-struct MonitorTap {
-    ring: Arc<FrameRing>,
-    /// Mezcla entrelazada de `canales + 2` (reservada al abrir: el callback no asigna).
+/// Pares de otras placas: el callback principal mezcla `canales + 2·n` y envía cada par extra a su anillo.
+struct Taps {
+    rings: Vec<Arc<FrameRing>>,
+    /// Mezcla entrelazada de `canales + 2·n` (reservada al abrir: el callback no asigna).
     scratch: Vec<f32>,
-    /// Par de auriculares entrelazado.
-    pair: Vec<f32>,
+    /// Un par entrelazado por anillo.
+    pairs: Vec<Vec<f32>>,
 }
 
 /// Constante de tiempo de la rampa del safe mute.
@@ -236,14 +275,21 @@ pub struct RtRenderer {
     mute_gain: f32,
     /// Ganancia lineal del volumen maestro (suavizada).
     master_gain: f32,
-    tap: Option<MonitorTap>,
+    /// Cuánto de mono lleva la salida (0 = estéreo, 1 = mono), suavizado.
+    mono_mix: f32,
+    tap: Option<Taps>,
 }
 
 impl RtRenderer {
     pub fn new(parts: RendererParts, channels: usize, sample_rate: u32) -> Self {
         let channels = channels.max(1);
-        let tap = parts.monitor_tap.clone().map(|ring| MonitorTap { ring, scratch: vec![0.0; TAP_CHUNK_FRAMES * (channels + MONITOR_BUS_CHANNELS)], pair: vec![0.0; TAP_CHUNK_FRAMES * MONITOR_BUS_CHANNELS] });
-        Self { parts, channels, sample_rate: sample_rate.max(1), first_call: true, last_start: None, last_period_ns: 0, cpu_smoothed: 0, mute_gain: 1.0, master_gain: 1.0, tap }
+        let n = parts.taps.len();
+        let tap = (n > 0).then(|| Taps {
+            rings: parts.taps.clone(),
+            scratch: vec![0.0; TAP_CHUNK_FRAMES * (channels + MONITOR_BUS_CHANNELS * n)],
+            pairs: vec![vec![0.0; TAP_CHUNK_FRAMES * MONITOR_BUS_CHANNELS]; n],
+        });
+        Self { parts, channels, sample_rate: sample_rate.max(1), first_call: true, last_start: None, last_period_ns: 0, cpu_smoothed: 0, mute_gain: 1.0, master_gain: 1.0, mono_mix: 0.0, tap }
     }
 
     /// Rellena `data` (entrelazado, `channels` canales). Invocado por el hilo de audio.
@@ -282,9 +328,9 @@ impl RtRenderer {
         let scope = p.alloc_check.then(RtScope::enter);
         let (channels, rate) = (self.channels, self.sample_rate);
         if let Some(tap) = self.tap.as_mut() {
-            // Auriculares en otra placa: se mezcla `canales + 2`; los primeros salen por este stream y el par extra va
-            // al anillo que lee el stream de la otra placa.
-            let inner = channels + MONITOR_BUS_CHANNELS;
+            // Salidas en otras placas: se mezcla `canales + 2·n`; los primeros salen por este stream y cada par extra va
+            // al anillo que lee el stream de su placa.
+            let inner = channels + MONITOR_BUS_CHANNELS * tap.rings.len();
             let mut done = 0;
             while done < frames {
                 let n = (frames - done).min(TAP_CHUNK_FRAMES);
@@ -297,12 +343,18 @@ impl RtRenderer {
                 }
                 apply_safe_mute(&p.health, &mut self.mute_gain, inner, rate, buf);
                 apply_master(&p.health, &mut self.master_gain, inner, rate, buf);
+                apply_mono(&p.health, &mut self.mono_mix, inner, channels, rate, buf);
                 for (f, frame) in buf.chunks_exact(inner).enumerate() {
                     data[(done + f) * channels..(done + f + 1) * channels].copy_from_slice(&frame[..channels]);
-                    tap.pair[f * 2] = frame[channels];
-                    tap.pair[f * 2 + 1] = frame[channels + 1];
+                    for (k, pair) in tap.pairs.iter_mut().enumerate() {
+                        let at = channels + MONITOR_BUS_CHANNELS * k;
+                        pair[f * 2] = frame[at];
+                        pair[f * 2 + 1] = frame[at + 1];
+                    }
                 }
-                tap.ring.push(&tap.pair[..n * 2]);
+                for (ring, pair) in tap.rings.iter().zip(&tap.pairs) {
+                    ring.push(&pair[..n * 2]);
+                }
                 done += n;
             }
         } else {
@@ -315,6 +367,7 @@ impl RtRenderer {
             }
             apply_safe_mute(&p.health, &mut self.mute_gain, self.channels, self.sample_rate, data);
             apply_master(&p.health, &mut self.master_gain, self.channels, self.sample_rate, data);
+            apply_mono(&p.health, &mut self.mono_mix, self.channels, self.channels, self.sample_rate, data);
         }
         report_peaks(&p.shm, self.channels, data);
         drop(scope);
@@ -390,6 +443,32 @@ fn apply_master(health: &Health, gain: &mut f32, channels: usize, sample_rate: u
     *gain = if (g - target).abs() < 1e-5 { target } else { g };
 }
 
+/// Maestro en mono: en el par principal (fichas 1 y 2) y en el de cada salida adicional, izquierda y derecha pasan a
+/// ser su promedio. Sin pico nuevo: lo que estaba a los dos lados suena igual y lo paneado a uno, 6 dB más bajo en
+/// cada ficha. El cambio se funde en unos milisegundos (sin clic). Los auriculares quedan en estéreo. `channels`: los
+/// del bloque entrelazado; `main`: los de la placa principal (los pares extra empiezan ahí).
+#[inline]
+fn apply_mono(health: &Health, mix: &mut f32, channels: usize, main: usize, sample_rate: u32, data: &mut [f32]) {
+    let target = if health.master_mono.load(Ordering::Relaxed) { 1.0 } else { 0.0 };
+    if *mix == target && target == 0.0 {
+        return;
+    }
+    let coef = 1.0 - (-1.0 / (SAFE_MUTE_RAMP_SECS * sample_rate.max(1) as f32)).exp();
+    let mon = health.monitor_first.load(Ordering::Relaxed) as usize;
+    let pairs = (main >= 2).then_some(0).into_iter().chain((main..channels.saturating_sub(1)).step_by(2)).filter(|&first| mon == 0 || first != mon - 1);
+    let mut a = *mix;
+    for frame in data.chunks_exact_mut(channels) {
+        a += (target - a) * coef;
+        for first in pairs.clone() {
+            let (l, r) = (frame[first], frame[first + 1]);
+            let half = 0.5 * a;
+            frame[first] = l + half * (r - l);
+            frame[first + 1] = r + half * (l - r);
+        }
+    }
+    *mix = if (a - target).abs() < 1e-5 { target } else { a };
+}
+
 /// Pico por canal del bloque → medidores por consumo de la memoria compartida.
 #[inline]
 fn report_peaks(shm: &SharedMemory, channels: usize, data: &[f32]) {
@@ -422,8 +501,8 @@ pub struct AudioBackend {
     cfg: BackendConfig,
     parts: RendererParts,
     running: Running,
-    /// Stream de la segunda placa (auriculares), si la hay.
-    monitor_stream: Option<cpal::Stream>,
+    /// Streams de las otras placas (salidas adicionales y auriculares).
+    tap_streams: Vec<cpal::Stream>,
     info: BackendInfo,
     /// Pruebas: simula la placa desenchufada (abrir falla).
     #[cfg(test)]
@@ -440,13 +519,13 @@ impl AudioBackend {
             epoch,
             rt_priority: cfg.rt_priority,
             alloc_check: cfg.rt_alloc_check,
-            monitor_tap: cfg.separate_monitor_device().map(|_| FrameRing::new(MONITOR_BUS_CHANNELS, MONITOR_RING_FRAMES)),
+            taps: cfg.tap_rings(),
         };
         let mut backend = Self {
             cfg,
             parts,
             running: Running::Stopped,
-            monitor_stream: None,
+            tap_streams: Vec::new(),
             info: BackendInfo::default(),
             #[cfg(test)]
             unplugged: false,
@@ -476,7 +555,7 @@ impl AudioBackend {
     pub fn stop(&mut self) {
         self.parts.health.audio_running.store(false, Ordering::Release);
         self.running = Running::Stopped; // soltar el stream detiene el callback
-        self.monitor_stream = None;
+        self.tap_streams.clear();
     }
 
     /// Pruebas: desenchufa (el stream se corta y la placa no vuelve a abrir) o vuelve a enchufar la placa.
@@ -500,13 +579,41 @@ impl AudioBackend {
             BackendKind::Null => self.open_null(),
             BackendKind::Cpal => self.open_device()?,
         };
-        // Auriculares en otra placa: segundo stream alimentado por el bus de monitoreo. Si no abre, el programa sigue
-        // con la sala y la audición avisa en lugar de callar sin explicación.
-        self.monitor_stream = None;
-        if let (Some(name), Some(ring), BackendKind::Cpal) = (self.cfg.separate_monitor_device(), self.parts.monitor_tap.clone(), self.cfg.kind) {
-            match self.open_monitor_stream(name, ring, info.sample_rate) {
+        // Salidas adicionales: un stream por placa, alimentado por su par de la mezcla. La que no abre queda fuera y lo
+        // que iba por ella sale por la principal (ver `VoiceLoader::set_extra_outputs`). Sin placas reales (motor
+        // virtual) se dan por abiertas.
+        self.tap_streams.clear();
+        let mut live = 0u32;
+        for k in 0..self.cfg.extra_output_slots() {
+            let Some(name) = self.cfg.extra_output(k).map(str::to_string) else {
+                info.extra_outputs.push(None);
+                continue;
+            };
+            if self.cfg.kind == BackendKind::Null {
+                info.extra_outputs.push(Some(name));
+                live |= 1 << k;
+                continue;
+            }
+            match self.open_tap_stream(&name, Arc::clone(&self.parts.taps[k]), info.sample_rate, &format!("la Salida {}", k + 2)) {
                 Ok((stream, device, warns)) => {
-                    self.monitor_stream = Some(stream);
+                    self.tap_streams.push(stream);
+                    info.extra_outputs.push(Some(device));
+                    info.warnings.extend(warns);
+                    live |= 1 << k;
+                }
+                Err(e) => {
+                    info.extra_outputs.push(None);
+                    info.warnings.push(format!("No se pudo abrir la Salida {} «{name}»: {e}. Lo que va por ella sale por la principal.", k + 2));
+                }
+            }
+        }
+        h.extra_outputs_live.store(live, Ordering::Release);
+        // Auriculares en otra placa: otro stream alimentado por el bus de monitoreo. Si no abre, el programa sigue con la
+        // sala y la audición avisa en lugar de callar sin explicación.
+        if let (Some(name), Some(ring), BackendKind::Cpal) = (self.cfg.separate_monitor_device(), self.parts.taps.get(self.cfg.extra_output_slots()).cloned(), self.cfg.kind) {
+            match self.open_tap_stream(name, ring, info.sample_rate, "los auriculares") {
+                Ok((stream, device, warns)) => {
+                    self.tap_streams.push(stream);
                     info.monitor_device = Some(device);
                     info.warnings.extend(warns);
                 }
@@ -537,9 +644,10 @@ impl AudioBackend {
         (Running::Null(stream), info)
     }
 
-    /// Abre la placa de auriculares. Corre a su propia frecuencia y con su propio reloj: el audio llega por un anillo y
-    /// un remuestreador Catmull-Rom con control PI de deriva lo adapta (ver `qlab_engine::drift`).
-    fn open_monitor_stream(&self, wanted: &str, ring: Arc<FrameRing>, main_rate: u32) -> Result<(cpal::Stream, String, Vec<String>), BackendError> {
+    /// Abre otra placa (una salida adicional o los auriculares; `what` la nombra en los avisos). Corre a su propia
+    /// frecuencia y con su propio reloj: el audio llega por un anillo y un remuestreador Catmull-Rom con control PI de
+    /// deriva lo adapta (ver `qlab_engine::drift`).
+    fn open_tap_stream(&self, wanted: &str, ring: Arc<FrameRing>, main_rate: u32, what: &str) -> Result<(cpal::Stream, String, Vec<String>), BackendError> {
         let mut warnings = Vec::new();
         let device = find_output_device(self.cfg.host.as_deref(), wanted)?;
         let name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| wanted.to_string());
@@ -555,7 +663,7 @@ impl AudioBackend {
             .ok_or_else(|| BackendError::Unsupported(format!("«{name}» no ofrece salida f32")))?;
         let rate = main_rate.clamp(range.min_sample_rate(), range.max_sample_rate());
         if rate != main_rate {
-            warnings.push(format!("los auriculares «{name}» corren a {rate} Hz y la sala a {main_rate} Hz: se remuestrea el audio de los auriculares"));
+            warnings.push(format!("{what} («{name}») corre a {rate} Hz y la sala a {main_rate} Hz: se remuestrea"));
         }
         let buffer_size = match range.buffer_size() {
             cpal::SupportedBufferSize::Range { min, max } => cpal::BufferSize::Fixed(self.cfg.buffer_frames.clamp(*min, *max)),
@@ -597,7 +705,7 @@ impl AudioBackend {
                         done += n;
                     }
                 },
-                move |err: cpal::Error| eprintln!("[audio] error del stream de auriculares: {err}"),
+                move |err: cpal::Error| eprintln!("[audio] error del stream de otra placa: {err}"),
                 None,
             )
             .map_err(stream_err)?;
@@ -671,6 +779,7 @@ impl AudioBackend {
             exclusive_active: false,
             warnings,
             monitor_device: None,
+            extra_outputs: Vec::new(),
         };
         Ok((Running::Cpal(stream), info))
     }
@@ -920,7 +1029,7 @@ mod tests {
             epoch: Epoch::now(),
             rt_priority: 90,
             alloc_check,
-            monitor_tap: None,
+            taps: Vec::new(),
         };
         Rig { parts, health, shm, cmd_tx, st_rx, pool }
     }
@@ -988,12 +1097,57 @@ mod tests {
         ))
     }
 
+    /// Voz estéreo con sonido solo en la izquierda (lo «paneado a un lado»), hacia las salidas `first+1`/`first+2`.
+    fn left_only_voice(id: u64, frames: usize, out: usize, first: usize) -> Arc<Voice> {
+        use qlab_protocol::matrix::MIN_VOLUME_DB;
+        let pcm: Vec<f32> = (0..frames).flat_map(|_| [0.6, 0.0]).collect();
+        let reader = StreamingVoiceReader::from_interleaved(2, 0, pcm.into_boxed_slice());
+        let mut m = AudioLevelMatrixRt::new(2, out);
+        for i in 1..=2 {
+            for o in 1..=out {
+                m.base_db[i][o] = if o == first + i { 0.0 } else { MIN_VOLUME_DB };
+            }
+        }
+        m.matrix_dirty = true;
+        m.recompute_targets(1.0, 1.0);
+        m.snap_to_targets();
+        let rt = VoiceRtState::new(0, &[], m).unwrap();
+        Arc::new(Voice::with_reader(
+            VoiceInit { id, cue_unique_id: id as u128, patch_id: 0, file_sample_rate: 48_000, start_frame: 0, end_frame: frames as u64, infinite_loop: false, rate: 1.0 },
+            rt,
+            reader,
+        ))
+    }
+
+    #[test]
+    fn the_mono_master_sends_what_is_panned_to_one_side_out_of_both_jacks_but_not_to_the_headphones() {
+        let mut r = rig("mono", true);
+        r.pool.insert_voice(left_only_voice(1, 96_000, 4, 0));
+        r.pool.insert_voice(left_only_voice(2, 96_000, 4, 2));
+        for id in [1, 2] {
+            assert!(r.cmd_tx.try_push(AudioCommand::Play { voice_id: id, start_host_time_ns: 0 }).is_ok());
+        }
+        r.health.monitor_first.store(2 + 1, Ordering::Relaxed); // auriculares en las fichas 3-4 de la misma placa
+        let mut renderer = RtRenderer::new(r.parts.clone(), 4, 48_000);
+        let mut out = vec![0.0f32; 480 * 4];
+        renderer.render(&mut out);
+        assert_eq!((out[4 * 100], out[4 * 100 + 1]), (0.6, 0.0), "en estéreo, la derecha no tiene nada");
+        r.health.master_mono.store(true, Ordering::Relaxed);
+        for _ in 0..10 {
+            renderer.render(&mut out);
+        }
+        let last = &out[out.len() - 4..];
+        assert!((last[0] - 0.3).abs() < 1e-4 && (last[1] - 0.3).abs() < 1e-4, "en mono, las dos fichas: {last:?}");
+        assert_eq!((last[2], last[3]), (0.6, 0.0), "los auriculares siguen en estéreo");
+        assert_eq!(r.health.rt_alloc_violations.load(Ordering::Relaxed), 0, "el mono no asigna memoria en el callback");
+    }
+
     #[test]
     fn the_headphone_bus_of_another_card_goes_to_the_ring_not_to_the_room_and_ignores_the_master_volume() {
         let mut r = rig("tap", true);
         let ring = FrameRing::new(MONITOR_BUS_CHANNELS, MONITOR_RING_FRAMES);
         let mut parts = r.parts.clone();
-        parts.monitor_tap = Some(Arc::clone(&ring));
+        parts.taps = vec![Arc::clone(&ring)];
         r.health.monitor_first.store(2 + 1, Ordering::Relaxed); // la sala son 2 canales: el par de auriculares es el 3-4 interno
         r.pool.insert_voice(routed_voice(1, 0.5, 96_000, 4, 2));
         assert!(r.cmd_tx.try_push(AudioCommand::Play { voice_id: 1, start_host_time_ns: 0 }).is_ok());

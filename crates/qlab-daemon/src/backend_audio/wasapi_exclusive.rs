@@ -150,6 +150,7 @@ impl ExclusiveStream {
                             exclusive_active: true,
                             warnings: vec![format!("formato del dispositivo: {}", o.kind.name())],
                             monitor_device: None,
+                            extra_outputs: Vec::new(),
                         };
                         let renderer = make_renderer(o.channels, cfg.sample_rate);
                         let _ = tx.send(Ok(info));
