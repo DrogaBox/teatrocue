@@ -98,6 +98,7 @@ USO: teatrocue-daemon [opciones]
   --alloc-check MODO     off | count | abort — vigilancia de asignaciones en el callback
   --monitor-device NOM   auriculares (PFL) en OTRA placa de sonido (p. ej. el jack de la notebook), por nombre
   --monitor-first N      auriculares (PFL): primer canal (desde 1) del par de salida, p. ej. 3 = canales 3-4
+  --output2 NOMBRE       placa de la «Salida 2» (también --output3 y --output4); por nombre
   --osc-port N           activa el control remoto OSC por UDP en el puerto N (apagado por defecto)
   --list-devices         lista las salidas de audio y termina
   --license-request      imprime el código de solicitud de reactivación de emergencia y termina
@@ -145,6 +146,13 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, S
             "--ui-ring" => cfg.ring_producer = RingProducer::ExternalUi,
             "--no-mlock" => cfg.lock_memory = false,
             "--monitor-device" => cfg.backend.monitor_device = Some(value(&mut args, &arg)?),
+            "--output2" | "--output3" | "--output4" => {
+                let k = usize::from(arg.as_bytes()[arg.len() - 1] - b'2');
+                if cfg.backend.extra_outputs.len() <= k {
+                    cfg.backend.extra_outputs.resize(k + 1, String::new());
+                }
+                cfg.backend.extra_outputs[k] = value(&mut args, &arg)?;
+            }
             "--monitor-first" => {
                 let n: u16 = number(&mut args, &arg)?;
                 if n == 0 {
@@ -251,6 +259,9 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad:?} debería rechazarse");
         }
         assert!(USAGE.contains("--exclusive"));
+        let c = cfg(&["--output3", "USB Audio", "--output2", "Realtek"]);
+        assert_eq!(c.backend.extra_outputs, ["Realtek", "USB Audio"]);
+        assert_eq!(cfg(&["--output4", "X"]).backend.extra_outputs, ["", "", "X"]);
     }
 
     #[test]

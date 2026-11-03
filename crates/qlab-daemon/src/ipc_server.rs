@@ -219,8 +219,11 @@ impl IpcContext {
         let (old, _parent, state) = self
             .ask(|reply| SeqCommand::GetCueDetail(id, reply), SEQUENCER_TIMEOUT)?
             .ok_or_else(|| format!("no existe la cue {}", id.0))?;
-        if needs_voice_reload(&old, &node) {
-            let active = !matches!(state.as_str(), "Idle" | "Armed" | "Completed");
+        let active = !matches!(state.as_str(), "Idle" | "Armed" | "Completed");
+        let levels = |n: &CueNodeDto| n.body.audio().and_then(|a| a.levels.clone());
+        // Rutear a una salida sin placa: se recarga la voz para que suene por la principal (con la cue parada).
+        let to_down_output = !active && levels(&old) != levels(&node) && levels(&node).is_some_and(|l| self.loader.lock().expect("envenenado").routes_to_down_output(&l));
+        if needs_voice_reload(&old, &node) || to_down_output {
             if active {
                 return Err("detén la cue antes de cambiar su archivo, región o bucles".into());
             }

@@ -11,6 +11,10 @@ pub const TITLE: &str = "Configuración de audio";
 /// Primera opción del selector de auriculares.
 pub const NO_PHONES: &str = "Sin salida de auriculares";
 pub const DEFAULT_DEVICE: &str = "Dispositivo predeterminado del sistema";
+/// Primera opción de cada salida adicional.
+pub const NO_CARD: &str = "Sin placa";
+/// Botón que configura la consola del teatro.
+pub const USE_CONSOLE: &str = "Usar la Xenyx 802S";
 
 #[derive(Default)]
 pub struct AudioSettingsUi {
@@ -67,6 +71,21 @@ pub fn show(ctx: &egui::Context, st: &mut AudioSettingsUi, engine_note: &str) ->
         ui.add_space(6.0);
         ui.label(RichText::new(engine_note).color(theme::TEXT_DIM));
         ui.add_space(10.0);
+        // La consola del teatro conectada: un clic la deja como salida, con su formato (estéreo, 48 kHz).
+        let console = st.devices.as_ref().and_then(|l| l.iter().find(|(_, n)| qlab_daemon::backend_audio::is_theater_console(n)).cloned());
+        if let Some((host, name)) = console.filter(|(_, n)| st.draft.device.as_deref() != Some(n.as_str())) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Consola conectada: {name}")).color(theme::GREEN));
+                if ui.button(RichText::new(USE_CONSOLE).strong()).on_hover_text("La elige como salida de audio, con 2 canales a 48 kHz (su formato USB)").clicked() {
+                    st.draft.device = Some(name.clone());
+                    st.draft.host = Some(host.clone());
+                    st.draft.channels = 2;
+                    st.draft.sample_rate = 48_000;
+                    st.draft.monitor_first = None;
+                }
+            });
+            ui.add_space(6.0);
+        }
         egui::Grid::new("audio_settings_grid").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             ui.label("Salida de audio");
             let selected = match (&st.draft.host, &st.draft.device) {
@@ -110,6 +129,11 @@ pub fn show(ctx: &egui::Context, st: &mut AudioSettingsUi, engine_note: &str) ->
                     ui.selectable_value(&mut st.draft.sample_rate, r, format!("{r} Hz"));
                 }
             });
+            ui.end_row();
+            ui.label("Modo exclusivo");
+            ui.checkbox(&mut st.draft.exclusive, "Solo TeatroCue suena por la placa (como ASIO en Pro Tools)").on_hover_text(
+                "Windows: los sonidos de Windows y de otros programas no se cuelan por la consola, y la latencia baja. Si la placa no lo acepta, se usa el modo normal y se avisa",
+            );
             ui.end_row();
             ui.label("Auriculares (PFL)");
             let pairs: Vec<u16> = (2..st.draft.channels.saturating_sub(1)).step_by(2).collect();
@@ -168,6 +192,39 @@ pub fn show(ctx: &egui::Context, st: &mut AudioSettingsUi, engine_note: &str) ->
                     ui.label(RichText::new("Los auriculares suenan por su propia placa (con su reloj y frecuencia): el audio se adapta solo.").small().color(theme::TEXT_DIM));
                 }
             });
+            ui.end_row();
+            // Salidas adicionales: otras placas a las que cada cue y cada pad pueden mandar sonido («Sale por»).
+            let main = st.draft.device.clone();
+            st.draft.extra_outputs.resize(qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS, String::new());
+            for k in 0..qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS {
+                ui.label(format!("Salida {}", k + 2));
+                let current = st.draft.extra_outputs[k].clone();
+                egui::ComboBox::from_id_salt(("audio_extra_output", k)).selected_text(if current.is_empty() { NO_CARD } else { current.as_str() }).width(380.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_empty(), NO_CARD).clicked() {
+                        st.draft.extra_outputs[k].clear();
+                    }
+                    match &st.devices {
+                        None => {
+                            ui.label(RichText::new("Buscando dispositivos…").color(theme::TEXT_DIM));
+                        }
+                        Some(list) => {
+                            let mut seen: Vec<&str> = Vec::new();
+                            for (_, name) in list.iter().filter(|(_, n)| !n.is_empty() && main.as_deref().is_none_or(|m| !m.eq_ignore_ascii_case(n))) {
+                                if seen.contains(&name.as_str()) {
+                                    continue;
+                                }
+                                seen.push(name);
+                                if ui.selectable_label(current == *name, name).clicked() {
+                                    st.draft.extra_outputs[k] = name.clone();
+                                }
+                            }
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            ui.label("");
+            ui.label(RichText::new("Cada cue y cada pad de Carts eligen en «Sale por» si van a la principal o a una de estas placas, por las dos fichas o por una sola. Si una placa no está conectada, lo suyo sale por la principal.").small().color(theme::TEXT_DIM));
             ui.end_row();
             ui.label("Control remoto OSC");
             ui.horizontal(|ui| {

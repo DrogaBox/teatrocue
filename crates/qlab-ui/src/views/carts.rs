@@ -69,6 +69,8 @@ pub struct CartsState {
     pub held_by_mouse: Option<usize>,
     /// Pads que el teclado mantiene pulsados.
     pub held_by_key: [bool; CART_PADS],
+    /// Salidas que se ofrecen en «Sale por».
+    pub outputs: super::Outputs,
 }
 
 impl CartsState {
@@ -223,6 +225,14 @@ fn editor(ui: &mut egui::Ui, st: &mut CartsState, i: usize, events: &mut Vec<Car
             for k in KEYS {
                 let label = if others.iter().any(|o| o == k) { format!("{k} (ya usado)") } else { k.to_string() };
                 ui.selectable_value(&mut pad.key, k.to_string(), label);
+            }
+        });
+        ui.end_row();
+        ui.label(super::ROUTE_LABEL);
+        let current = pad.route;
+        egui::ComboBox::from_id_salt("cart_route").selected_text(st.outputs.label(current)).width(300.0).show_ui(ui, |ui| {
+            for r in qlab_protocol::matrix::OutputRoute::all(st.outputs.extras.len()) {
+                ui.selectable_value(&mut pad.route, r, st.outputs.label(r));
             }
         });
         ui.end_row();

@@ -8,6 +8,7 @@ Todo esto también está en el manual del programa (tecla **F1**).
 | Disparar la cue en espera | **Espacio** o el botón GO |
 | Parar todo (suave / duro) | **Esc** / **Esc Esc** (dos veces seguidas). Esc y «Parar todo» funden en 1 s de fábrica (Opciones > Preferencias > Fundidos al parar); Esc Esc corta seco. Todas las paradas generales callan también los pads de Carts y la escucha por auriculares |
 | Volumen de toda la sala | Deslizador **MASTER** (barra superior). Doble clic = 0 dB |
+| Todo en mono (una sola ficha de la consola) | Botón **MONO** al lado del MASTER: suma izquierda y derecha y manda lo mismo por las dos fichas. La PC lo recuerda |
 | Pausar / reanudar todo | Botones «Pausar todo» / «Reanudar todo» |
 | Mover el playhead sin disparar | Flechas ↑ ↓ |
 | Pausar / reanudar | **P**: el cabezal queda quieto en la onda y al reanudar sigue desde ese mismo frame |
@@ -80,6 +81,16 @@ Después, el botón **PFL** del Inspector escucha la cue —y el **PFL** de cada
 
 ## Audio
 **Ver → Configuración de audio…**: interfaz de sonido, canales, buffer y frecuencia. Aplicar reinicia el motor (se corta lo que suena) y recarga el show abierto.
+
+**Consola Behringer Xenyx 802S**: por USB es una placa estéreo (dos fichas, a 48 kHz). Si está conectada y la salida es «Dispositivo predeterminado del sistema», TeatroCue sale por ella aunque Windows tenga otra salida predeterminada. En la configuración de audio aparece **Usar la Xenyx 802S**, que la deja elegida con su formato. **Modo exclusivo** hace que solo TeatroCue suene por la placa, como ASIO en Pro Tools: los sonidos de Windows y de otros programas no se cuelan; si la placa no lo acepta, se usa el modo normal y se avisa.
+
+**MONO**: los audios vienen en estéreo, con instrumentos paneados a cada lado. Si de la consola se usa una sola ficha, con MONO encendido se escucha todo (lo paneado al otro lado no se pierde). Los auriculares siguen en estéreo.
+
+**Por dónde sale cada cue y cada pad («Sale por»)**: en la pestaña **Audio Levels** de cada cue, y en el editor de cada pad de Carts (clic derecho en el pad):
+- **Principal · las dos fichas**: estéreo, como siempre.
+- **Principal · solo ficha 1** / **solo ficha 2**: todo en mono por esa ficha. Así las dos fichas de la consola sirven como dos salidas distintas (por ejemplo, la 1 a la sala y la 2 a un monitor de escenario).
+- **Salida 2, 3 y 4**: otras placas (el jack de la PC, otra USB), que se eligen en la configuración de audio. Cada una también con las dos fichas o una sola. Si esa placa no está conectada, lo suyo sale por la principal: nunca queda en silencio.
+Un archivo mono que no tiene niveles tocados suena por las dos fichas, al centro.
 
 **Si se pierde la placa** (se desenchufa la interfaz o Windows la cambia): el motor la vuelve a abrir solo. Si no puede, aparece arriba de todo un cartel rojo **SIN AUDIO** con el motivo; el motor la sigue buscando cada 2 segundos y el cartel se va solo cuando vuelve a sonar. **Reintentar** prueba en el acto (por ejemplo, apenas se vuelve a enchufar) y **Elegir otra salida…** abre la configuración de audio para pasar a otra placa o al jack de la computadora. El show y la lista no se tocan.
 

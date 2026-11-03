@@ -52,7 +52,17 @@ pub fn show(ui: &mut Ui, d: &mut Draft, st: &mut LevelsUi, cx: &mut TabCtx, out:
         }
         // Audio, o la pista de audio de un vídeo.
         body => match body.audio_mut().and_then(|a| a.levels.as_mut()) {
-            Some(m) => matrix_editor(ui, id, m, st, out),
+            Some(m) => {
+                let current = cx.outputs.route_of(m);
+                let mut picked = None;
+                cx.outputs.picker(ui, egui::Id::NULL.with(("cue_route", id)), current, |r| picked = Some(r));
+                if let Some(r) = picked {
+                    m.apply_route(r, cx.outputs.main);
+                }
+                ui.label(RichText::new("Las dos fichas: estéreo. Una sola ficha: todo en mono por esa salida (sirve para usar las dos fichas de la consola como dos salidas distintas).").small().color(theme::TEXT_DIM));
+                ui.add_space(4.0);
+                matrix_editor(ui, id, m, st, out, &cx.outputs);
+            }
             None => {
                 ui.label(RichText::new("Esta cue aún no tiene matriz de niveles").color(theme::TEXT_DIM));
             }
@@ -113,7 +123,7 @@ pub fn toggle_gang(m: &mut AudioLevelMatrixData, row: usize, col: usize, id: u8)
     }
 }
 
-fn matrix_editor(ui: &mut Ui, cue_id: u64, m: &mut AudioLevelMatrixData, st: &mut LevelsUi, out: &mut InspectorOutput) {
+fn matrix_editor(ui: &mut Ui, cue_id: u64, m: &mut AudioLevelMatrixData, st: &mut LevelsUi, out: &mut InspectorOutput, outs: &crate::views::Outputs) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("Todo en silencio").clicked() {
             set_all_silent(m);
@@ -149,7 +159,7 @@ fn matrix_editor(ui: &mut Ui, cue_id: u64, m: &mut AudioLevelMatrixData, st: &mu
         ui.label(RichText::new("Master / Trim").small().color(theme::TEXT_DIM));
         for j in 1..=outputs {
             ui.vertical(|ui| {
-                ui.label(RichText::new(format!("Out {j}")).small().strong().color(theme::AMBER));
+                ui.label(RichText::new(outs.column(j)).small().strong().color(theme::AMBER));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let bit = 1u64 << (j - 1);
@@ -385,7 +395,7 @@ mod tests {
             let mut out = InspectorOutput::default();
             for gang_mode in [false, true] {
                 st.gang_mode = gang_mode;
-                let o = ctx.run_ui(Default::default(), |ui| matrix_editor(ui, 1, &mut mat, &mut st, &mut out));
+                let o = ctx.run_ui(Default::default(), |ui| matrix_editor(ui, 1, &mut mat, &mut st, &mut out, &Default::default()));
                 o.drop_without_applying_deltas();
             }
             assert!(out.drags.is_empty(), "sin interacción no hay arrastres");

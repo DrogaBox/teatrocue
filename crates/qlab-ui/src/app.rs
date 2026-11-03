@@ -1832,6 +1832,7 @@ impl QlabApp {
     }
 
     fn carts_ui(&mut self, ctx: &egui::Context) {
+        self.carts.outputs = self.route_outputs();
         for ev in views::carts::show(ctx, &mut self.carts, self.locked) {
             match ev {
                 views::carts::CartEvent::Press(i) => self.cart_press(i),
@@ -2258,6 +2259,17 @@ impl QlabApp {
                 None => return Some(id),
             }
         }
+    }
+
+    /// Salidas que se ofrecen en «Sale por»: los canales de la placa principal (los del motor conectado) y las placas
+    /// adicionales de la configuración de audio.
+    fn route_outputs(&self) -> views::Outputs {
+        let main = match &self.conn {
+            ConnState::Connected(h) => h.channels as usize,
+            _ => self.cfg.audio.channels as usize,
+        };
+        let slots = self.cfg.audio.extra_output_slots();
+        views::Outputs { main, extras: self.cfg.audio.extra_outputs.iter().take(slots).cloned().collect() }
     }
 
     fn send_start_point(&mut self, id: u64, start: Option<f64>) {
@@ -3588,10 +3600,11 @@ impl QlabApp {
         // Id estático (nunca depende de la cue). Un panel redimensionable se ajusta al contenido si este mide
         // menos que su tamaño guardado (p. ej. mientras el Inspector recarga el borrador tras un GO), y se
         // quedaba en `min_size`. Llenar el alto disponible fija la altura que haya arrastrado el usuario.
+        let route_outputs = self.route_outputs();
         let panel = egui::Panel::bottom("global_inspector_panel").resizable(true).default_size(INSPECTOR_DEFAULT_HEIGHT).min_size(INSPECTOR_MIN_HEIGHT).show(ui, |ui| {
             ui.set_min_height(ui.available_height());
             let repair_state = self.inspector.draft.as_ref().and_then(crate::views::inspector::tab_time_loops::file_path_of).and_then(|p| self.repairs.get(&p).cloned());
-            let mut cx = TabCtx { model: &self.model, telemetry: &self.telemetry, waveforms: &mut self.waveforms, device_channels: hello.as_ref().map_or(2, |h| h.channels as usize), preroll: self.memories_panel.preroll, video: &mut self.video, repair: repair_state, memory_key: self.prefs.keys.primary(crate::prefs::Command::Memory) };
+            let mut cx = TabCtx { model: &self.model, telemetry: &self.telemetry, waveforms: &mut self.waveforms, device_channels: hello.as_ref().map_or(2, |h| h.channels as usize), preroll: self.memories_panel.preroll, video: &mut self.video, repair: repair_state, memory_key: self.prefs.keys.primary(crate::prefs::Command::Memory), outputs: route_outputs.clone() };
             inspector::show(ui, &mut self.inspector, &mut cx, &mut out);
         });
         self.inspector_height = panel.response.rect.height();

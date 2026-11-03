@@ -77,6 +77,14 @@ impl VoiceLoader {
         }
     }
 
+    /// ¿La matriz manda algo a una salida adicional sin placa? Entonces la voz se recarga para que eso salga por la
+    /// principal (los cambios de nivel en vivo irían a la placa que falta).
+    pub fn routes_to_down_output(&self, levels: &AudioLevelMatrixData) -> bool {
+        self.down_outputs.iter().any(|&first| {
+            (1..=levels.inputs as usize).any(|row| (first + 1..=first + 2).any(|col| levels.db(row, col).is_ok_and(|db| db > qlab_protocol::matrix::MIN_VOLUME_DB)))
+        })
+    }
+
     /// Salidas adicionales sin placa (no conectada o que no abrió), por el primer canal de su par en la mezcla. Vale
     /// para las voces que se carguen desde ahora.
     pub fn set_down_outputs(&mut self, firsts: Vec<usize>) {

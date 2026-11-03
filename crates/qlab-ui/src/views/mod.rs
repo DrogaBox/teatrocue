@@ -16,6 +16,69 @@ pub mod reactivation;
 pub mod reconnect;
 pub mod top_bar;
 
+use qlab_protocol::matrix::{AudioLevelMatrixData, OutputRoute};
+
+/// Rótulo del selector de salida de cues y pads.
+pub const ROUTE_LABEL: &str = "Sale por";
+/// Lo que muestra el selector cuando la matriz de la cue no es ninguna de sus rutas.
+pub const CUSTOM_ROUTE: &str = "Personalizada (ver la matriz)";
+
+/// Las salidas a las que una cue o un pad pueden mandar sonido: la principal y las placas adicionales configuradas.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Outputs {
+    /// Canales de la placa principal.
+    pub main: usize,
+    /// Placa de cada salida adicional («Salida 2»…); vacía = sin placa.
+    pub extras: Vec<String>,
+}
+
+impl Outputs {
+    /// «Principal · solo ficha 1», «Salida 2 (Realtek) · las dos fichas»…
+    pub fn label(&self, r: OutputRoute) -> String {
+        let label = r.label();
+        if r.output == 0 {
+            return label;
+        }
+        let place = format!("Salida {}", r.output + 1);
+        let card = match self.extras.get(r.output as usize - 1).map(|n| n.trim()).filter(|n| !n.is_empty()) {
+            Some(n) => format!("{place} ({n})"),
+            None => format!("{place} (sin placa: sale por la principal)"),
+        };
+        label.replacen(&place, &card, 1)
+    }
+
+    /// Cabecera de la columna `j` (desde 1) de una matriz: «Out 2», o «S2 · 1» en una salida adicional.
+    pub fn column(&self, j: usize) -> String {
+        match j.checked_sub(self.main.max(1) + 1) {
+            Some(k) if k / 2 < self.extras.len() => format!("S{} · {}", k / 2 + 2, k % 2 + 1),
+            _ => format!("Out {j}"),
+        }
+    }
+
+    /// Selector «Sale por»: muestra la ruta de la matriz y, al elegir otra, la reescribe. `true` si cambió.
+    pub fn picker(&self, ui: &mut eframe::egui::Ui, id: eframe::egui::Id, current: Option<OutputRoute>, mut pick: impl FnMut(OutputRoute)) -> bool {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label(eframe::egui::RichText::new(ROUTE_LABEL).strong());
+            let text = current.map_or_else(|| CUSTOM_ROUTE.to_string(), |r| self.label(r));
+            eframe::egui::ComboBox::from_id_salt(id).selected_text(text).width(340.0).show_ui(ui, |ui| {
+                for r in OutputRoute::all(self.extras.len()) {
+                    if ui.selectable_label(current == Some(r), self.label(r)).clicked() && current != Some(r) {
+                        pick(r);
+                        changed = true;
+                    }
+                }
+            });
+        });
+        changed
+    }
+
+    /// La ruta de la matriz de una cue (`None`: tocada a mano).
+    pub fn route_of(&self, m: &AudioLevelMatrixData) -> Option<OutputRoute> {
+        m.route(self.main, self.extras.len())
+    }
+}
+
 use crate::link::HelloInfo;
 use crate::model::{Telemetry, UiModel};
 

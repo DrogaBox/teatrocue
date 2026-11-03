@@ -131,6 +131,8 @@ pub struct TabCtx<'a> {
     pub repair: Option<crate::repair::RepairState>,
     /// Tecla de «Marcar memoria» para el rótulo del botón (el operador la puede cambiar).
     pub memory_key: String,
+    /// Salidas que se ofrecen en «Sale por».
+    pub outputs: crate::views::Outputs,
 }
 
 /// Peticiones de las pestañas a la aplicación.

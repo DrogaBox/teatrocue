@@ -31,11 +31,15 @@ pub struct AudioSettings {
     pub monitor_device: Option<String>,
     /// Pre-roll de las memorias (segundos antes del marcador): 0 = apagado, 2 o 4.
     pub preroll_secs: u8,
+    /// Windows: abrir la placa en modo exclusivo (como ASIO en Pro Tools): solo TeatroCue suena por ella.
+    pub exclusive: bool,
+    /// Placas de «Salida 2», «Salida 3» y «Salida 4» (vacío = sin placa).
+    pub extra_outputs: Vec<String>,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        Self { host: None, device: None, channels: 2, buffer_frames: 128, sample_rate: 48_000, osc_port: None, monitor_first: None, monitor_device: None, preroll_secs: 0 }
+        Self { host: None, device: None, channels: 2, buffer_frames: 128, sample_rate: 48_000, osc_port: None, monitor_first: None, monitor_device: None, preroll_secs: 0, exclusive: false, extra_outputs: Vec::new() }
     }
 }
 
@@ -56,6 +60,13 @@ impl AudioSettings {
         self.osc_port = self.osc_port.filter(|p| *p != 0);
         self.host = self.host.filter(|s| !s.trim().is_empty());
         self.device = self.device.filter(|s| !s.trim().is_empty());
+        self.extra_outputs.truncate(qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS);
+        for o in &mut self.extra_outputs {
+            *o = o.trim().to_string();
+        }
+        while self.extra_outputs.last().is_some_and(String::is_empty) {
+            self.extra_outputs.pop();
+        }
         self
     }
 
@@ -68,6 +79,14 @@ impl AudioSettings {
         cfg.osc_port = self.osc_port;
         cfg.monitor_first = self.monitor_first;
         cfg.backend.monitor_device = self.monitor_device.clone();
+        cfg.backend.exclusive = self.exclusive;
+        cfg.backend.extra_outputs = self.extra_outputs.clone();
+    }
+
+    /// Cuántas salidas adicionales ocupan lugar (las cues y los pads pueden elegirlas).
+    pub fn extra_output_slots(&self) -> usize {
+        let b = qlab_daemon::backend_audio::BackendConfig { channels: self.channels, extra_outputs: self.extra_outputs.clone(), ..Default::default() };
+        b.extra_output_slots()
     }
 
     /// Argumentos equivalentes para lanzar `teatrocue-daemon` como proceso aparte.
@@ -88,6 +107,12 @@ impl AudioSettings {
         if let Some(d) = &self.device {
             a.extend(["--device".into(), d.clone()]);
         }
+        if self.exclusive {
+            a.push("--exclusive".into());
+        }
+        for (k, o) in self.extra_outputs.iter().enumerate().filter(|(_, o)| !o.is_empty()) {
+            a.extend([format!("--output{}", k + 2), o.clone()]);
+        }
         a
     }
 
@@ -97,7 +122,9 @@ impl AudioSettings {
             (None, Some(m)) => format!(" · auriculares {}-{}", m + 1, m + 2),
             _ => String::new(),
         };
-        format!("{} · {} canales · buffer {} · {} Hz{phones}", self.device.as_deref().unwrap_or("dispositivo predeterminado"), self.channels, self.buffer_frames, self.sample_rate)
+        let extras: String = self.extra_outputs.iter().enumerate().filter(|(_, o)| !o.is_empty()).map(|(k, o)| format!(" · Salida {}: {o}", k + 2)).collect();
+        let exclusive = if self.exclusive { " · exclusivo" } else { "" };
+        format!("{} · {} canales · buffer {} · {} Hz{exclusive}{phones}{extras}", self.device.as_deref().unwrap_or("dispositivo predeterminado"), self.channels, self.buffer_frames, self.sample_rate)
     }
 }
 
@@ -161,7 +188,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("teatrocue-settings-{}", std::process::id()));
         let path = dir.join("sub/audio.json");
         assert_eq!(load(&path), AudioSettings::default(), "sin archivo: valores de fábrica");
-        let s = AudioSettings { host: Some("wasapi".into()), device: Some("Focusrite USB".into()), channels: 8, buffer_frames: 256, sample_rate: 96_000, osc_port: Some(53000), monitor_first: Some(2), monitor_device: None, preroll_secs: 4 };
+        let s = AudioSettings { host: Some("wasapi".into()), device: Some("Focusrite USB".into()), channels: 8, buffer_frames: 256, sample_rate: 96_000, osc_port: Some(53000), monitor_first: Some(2), monitor_device: None, preroll_secs: 4, exclusive: true, extra_outputs: vec!["Realtek".into(), String::new(), "USB Audio".into()] };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         std::fs::write(&path, "{ esto no es json").unwrap();
@@ -194,7 +221,7 @@ mod tests {
 
     #[test]
     fn settings_reach_the_daemon_config_and_the_command_line() {
-        let s = AudioSettings { host: Some("asio".into()), device: Some("MOTU".into()), channels: 16, buffer_frames: 64, sample_rate: 48_000, osc_port: None, monitor_first: None, monitor_device: None, preroll_secs: 0 };
+        let s = AudioSettings { host: Some("asio".into()), device: Some("MOTU".into()), channels: 16, buffer_frames: 64, sample_rate: 48_000, osc_port: None, monitor_first: None, monitor_device: None, preroll_secs: 0, exclusive: false, extra_outputs: Vec::new() };
         let mut cfg = DaemonConfig::default();
         s.apply_to(&mut cfg);
         assert_eq!((cfg.backend.host.as_deref(), cfg.backend.device.as_deref(), cfg.backend.channels, cfg.backend.buffer_frames), (Some("asio"), Some("MOTU"), 16, 64));

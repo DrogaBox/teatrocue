@@ -3397,3 +3397,70 @@ fn the_mono_button_puts_the_master_in_mono_and_remembers_it() {
     f.h.get_by_label("MONO").click();
     pump(&mut f.h, "de vuelta en estéreo", |a| !a.prefs.master_mono && !health.master_mono.load(std::sync::atomic::Ordering::Relaxed));
 }
+
+#[test]
+fn the_console_button_exclusive_mode_and_extra_outputs_are_saved() {
+    let dir = std::env::temp_dir().join(format!("qlab-ui-console-{}", std::process::id()));
+    let path = dir.join("audio.json");
+    let socket = crate::test_socket(&format!("qlab-ui-console-{}", std::process::id()));
+    let mut cfg = AppConfig::new(socket);
+    cfg.settings_path = Some(path.clone());
+    cfg.embedded_on_start = Some(false);
+    let mut h = harness(cfg);
+    pump(&mut h, "motor conectado", |a| a.is_connected());
+    app_mut(&mut h).audio_ui.open_with(&crate::settings::AudioSettings::default());
+    app_mut(&mut h).audio_ui.set_devices_for_test(vec![("wasapi".into(), "Altavoces (Realtek(R) Audio)".into()), ("wasapi".into(), "Altavoces (2- XENYX 802S)".into())]);
+    h.step();
+    h.step();
+    h.get_by_label(crate::views::audio_settings::USE_CONSOLE).click();
+    h.step();
+    h.step();
+    assert_eq!(app(&h).audio_ui.draft.device.as_deref(), Some("Altavoces (2- XENYX 802S)"));
+    assert!(h.query_by_label(crate::views::audio_settings::USE_CONSOLE).is_none(), "ya elegida: el botón no se ofrece");
+    // Por accesibilidad: el globo de ayuda del botón de la consola queda bajo el puntero, encima de la casilla.
+    h.get_by_label("Solo TeatroCue suena por la placa (como ASIO en Pro Tools)").click_accesskit();
+    h.step();
+    h.step();
+    assert!(["Salida 2", "Salida 3", "Salida 4"].iter().all(|l| h.query_by_label(l).is_some()), "las tres salidas adicionales se ofrecen");
+    app_mut(&mut h).audio_ui.draft.extra_outputs[0] = "Altavoces (Realtek(R) Audio)".into();
+    h.step();
+    h.get_by_label("Aplicar y reiniciar motor").click();
+    h.step();
+    h.step();
+    let saved = crate::settings::load(&path);
+    assert_eq!((saved.device.as_deref(), saved.channels, saved.sample_rate, saved.exclusive), (Some("Altavoces (2- XENYX 802S)"), 2, 48_000, true));
+    assert_eq!(saved.extra_outputs, ["Altavoces (Realtek(R) Audio)"], "las vacías del final no se guardan");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sale_por_sends_a_stereo_cue_out_of_one_jack_only_and_back() {
+    use qlab_protocol::matrix::{OutputRoute, RouteSide};
+    let mut f = fixture("route");
+    f.h.get_by_label("Audio Levels").click();
+    f.h.step();
+    f.h.step();
+    let route = |a: &QlabApp| a.inspector.draft.as_ref().filter(|d| !d.dirty()).and_then(|d| d.baseline.body.audio().and_then(|b| b.levels.as_ref()).and_then(|m| m.route(2, 0)));
+    pump(&mut f.h, "de fábrica, las dos fichas", |a| route(a) == Some(OutputRoute::default()));
+    f.h.get_by_value("Principal · las dos fichas").click();
+    f.h.step();
+    f.h.step();
+    f.h.get_by_label("Principal · solo ficha 1").click();
+    pump(&mut f.h, "guardada solo por la ficha 1", |a| route(a) == Some(OutputRoute { output: 0, side: RouteSide::First }));
+    f.h.step();
+    f.h.get_by_value("Principal · solo ficha 1").click();
+    f.h.step();
+    f.h.step();
+    f.h.get_by_label("Principal · solo ficha 2").click();
+    pump(&mut f.h, "guardada solo por la ficha 2", |a| route(a) == Some(OutputRoute { output: 0, side: RouteSide::Second }));
+    assert!(f.h.query_by_label("S2 · 1").is_none(), "sin salidas adicionales, la matriz no las muestra");
+}
+
+#[test]
+fn outputs_name_the_extra_cards_and_their_matrix_columns() {
+    use qlab_protocol::matrix::{OutputRoute, RouteSide};
+    let o = crate::views::Outputs { main: 2, extras: vec!["Realtek".into(), String::new()] };
+    assert_eq!(o.label(OutputRoute { output: 1, side: RouteSide::Second }), "Salida 2 (Realtek) · solo ficha 2");
+    assert_eq!(o.label(OutputRoute { output: 2, side: RouteSide::Both }), "Salida 3 (sin placa: sale por la principal) · las dos fichas");
+    assert_eq!((o.column(2).as_str(), o.column(3).as_str(), o.column(6).as_str(), o.column(7).as_str()), ("Out 2", "S2 · 1", "S3 · 2", "Out 7"));
+}

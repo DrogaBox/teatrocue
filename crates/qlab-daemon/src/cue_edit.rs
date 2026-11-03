@@ -171,10 +171,12 @@ pub fn needs_voice_reload(old: &CueNodeDto, new: &CueNodeDto) -> bool {
 /// Comandos para que el motor siga una edición de niveles, máscaras de mute/solo y velocidad.
 pub fn level_commands(id: CueId, old: &AudioCueData, new: &AudioCueData) -> Vec<AudioCommand> {
     let mut out = Vec::new();
-    let (rows, cols) = (old.levels.inputs.min(new.levels.inputs) as usize, old.levels.outputs.min(new.levels.outputs) as usize);
+    // Una matriz que crece (la cue pasa a una salida adicional) trae columnas nuevas: las de antes valían silencio.
+    let (rows, cols) = (old.levels.inputs.min(new.levels.inputs) as usize, new.levels.outputs as usize);
     for r in 0..=rows {
         for c in 0..=cols {
-            if let (Ok(a), Ok(b)) = (old.levels.db(r, c), new.levels.db(r, c)) {
+            let a = old.levels.db(r, c).unwrap_or(if r == 0 { 0.0 } else { qlab_protocol::matrix::MIN_VOLUME_DB });
+            if let Ok(b) = new.levels.db(r, c) {
                 if a != b {
                     out.push(AudioCommand::SetCrosspointDb { voice_id: id.0, row: r as u8, col: c as u8, db: b });
                 }

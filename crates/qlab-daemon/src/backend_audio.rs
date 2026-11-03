@@ -1291,6 +1291,27 @@ mod tests {
     }
 
     #[test]
+    fn extra_outputs_take_a_pair_each_after_the_main_card_and_before_the_headphones() {
+        let mut c = BackendConfig { channels: 2, extra_outputs: vec!["Realtek".into(), "  ".into(), "USB".into(), "  ".into()], ..Default::default() };
+        assert_eq!((c.extra_output_slots(), c.extra_output(0), c.extra_output(1), c.extra_output(2)), (3, Some("Realtek"), None, Some("USB")));
+        assert_eq!((c.extra_output_first(0), c.extra_output_first(2), c.mix_channels()), (2, 6, 8));
+        c.monitor_device = Some("Auriculares USB".into());
+        assert_eq!((c.monitor_bus_first(), c.mix_channels(), c.tap_rings().len()), (8, 10, 4), "los auriculares van al final");
+        c.extra_outputs = vec!["   ".into()];
+        assert_eq!((c.extra_output_slots(), c.mix_channels()), (0, 4), "solo nombres vacíos: ninguna salida adicional");
+    }
+
+    #[test]
+    fn the_virtual_engine_counts_its_extra_outputs_as_open() {
+        let r = rig("nullextra", true);
+        let cfg = BackendConfig { kind: BackendKind::Null, extra_outputs: vec![String::new(), "Realtek".into()], ..Default::default() };
+        let ctx = RtAudioContext::new(r.pool.rt_handle(), HeapRb::<AudioCommand>::new(8).split().1, HeapRb::<AudioStatus>::new(8).split().0);
+        let backend = AudioBackend::start(cfg, ctx, Arc::clone(&r.health), Arc::clone(&r.shm), Epoch::now()).unwrap();
+        assert_eq!(backend.info().extra_outputs, [None, Some("Realtek".to_string())]);
+        assert_eq!(r.health.extra_outputs_live.load(Ordering::Acquire), 0b10, "la Salida 2 no tiene placa; la 3 sí");
+    }
+
+    #[test]
     fn bad_host_and_device_names_are_reported() {
         let err = select_host(Some("no-existe")).err().expect("host inexistente");
         assert!(err.to_string().contains("no-existe"), "{err}");
