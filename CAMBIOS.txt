@@ -8,19 +8,66 @@ Los shows guardados se abren igual que antes; no hace falta cambiar nada en ello
 NUEVO (22/11/2026)
 ------------------
 
-0. Selector de placa de sonido para la Botonera de Carts (pedido de Jorge)
-   En la parte superior de la ventana "Botonera de Carts" ahora aparece el selector
-   "Salida de Carts:" para elegir con un solo clic por qué placa de sonido salen todos los
-   anuncios y pads (por ejemplo, el jack de la PC o una segunda placa USB aparte de la
-   consola principal). También muestra las otras placas conectadas a la PC para activarlas
-   directamente sin tener que editar pad por pad, y al cambiar la salida de un pad individual
-   se recarga al instante en el motor de audio.
+1. Selector de placa de sonido para la Botonera de Carts (pedido de Jorge)
+   Arriba de la ventana "Botonera de Carts" ahora está el selector "Salida de Carts:" para
+   elegir con un clic por qué placa de sonido salen todos los anuncios y pads (por ejemplo,
+   el jack de la PC o una segunda placa USB aparte de la consola principal). También detecta
+   las otras placas conectadas a la PC ("Usar placa: ...") y muestra con un indicador en vivo
+   si la placa secundaria está conectada.
 
-   Además, esta compilación funciona sin licencia (no pide license.key ni contraseña maestra
-   al instalar ni al abrir).
+2. Los anuncios de Carts (Salida 2, 3 y 4) son independientes del MASTER y MONO de la sala
+   Bajar el volumen MASTER de la sala (por ejemplo en el intervalo o antes de abrir telón) o
+   encender MONO en la consola principal ya no silencia ni altera los anuncios que salen por
+   otra placa de sonido.
+
+3. Botonera de Carts renovada para cabina (y notebooks 1366x768)
+   El editor de cada pad ahora se abre al costado derecho de la grilla para que nunca se
+   salga por debajo de la pantalla. Cada pad muestra su etiqueta de salida (S2, S3, P·1, P·2),
+   barra de progreso y cuenta regresiva mientras suena. Además hay un botón "Carts (F3)"
+   directo en la barra superior que se ilumina en ámbar ("Carts · SUENA") si quedó algún pad
+   reproduciéndose.
+
+4. Inspector plegable (Ctrl+I) y barra superior más clara
+   El panel inferior del Inspector se puede ocultar y mostrar con un clic o con Ctrl+I para
+   ver muchas más cues a la vez en notebooks de cabina. La barra superior ahora muestra el
+   nombre real de la placa abierta (por ejemplo XENYX 802S), "Cortes: 0" en lugar de jerga
+   técnica, y un botón PANIC más grande y separado del resto.
+
+5. Edición libre sin licencia
+   Esta compilación funciona sin licencia: no pide license.key ni contraseña maestra al
+   instalar ni al abrir.
 
 
----
+CORREGIDO (22/11/2026)
+----------------------
+
+1. Cambiar de placa de sonido ya no pierde el show sin guardar
+   Al elegir otra placa desde Carts o desde Configuración de audio, el programa resguarda
+   automáticamente el show actual (aunque no se haya guardado todavía) y lo restaura al
+   terminar de reiniciar el motor.
+
+2. La placa principal ya no aparece duplicada como "Otra placa"
+   Aunque la salida esté en "Dispositivo predeterminado del sistema", el programa ahora
+   reconoce el nombre real de la consola abierta y no la ofrece por error como placa secundaria.
+
+3. Seguridad reforzada en vivo y en Bloqueo de función
+   - Pulsar Esc mientras la ventana de Proyección tiene el foco ahora dispara PANIC (en
+     pantalla completa primero sale de pantalla completa).
+   - Con Bloqueo de función activo: cartel superior bien visible, se bloquean el doble clic
+     en la tabla y la Configuración de audio, se atenúa "Retomar al parar", y el programa
+     avisa si quedó alguna cue con velocidad de ensayo distinta de 1.0x.
+   - Las cues en PAUSA ahora se distinguen claramente en la tabla y muestran su tiempo
+     congelado con el rótulo PAUSA en el reloj grande.
+
+4. Otros arreglos importantes
+   - Al cambiar la salida de un pad de Carts se recarga de inmediato en la placa elegida, y
+     al hacer Panic o Parar todo el cartel "SUENA" de los pads se apaga correctamente.
+   - Los canales internos de auriculares PFL ya no aparecen como columnas extra (Out 5/6)
+     en la matriz de niveles de las cues.
+   - Las cues de tipo Fade ahora también permiten elegir cues de Video como destino.
+   - Las ventanas de herramientas de audio (Convertir / CD) ya no dejan pasar Espacio o Esc
+     al show de fondo.
+
 
 Versión del 03/11/2026, comparada con la del 21/10/2026.
 Los shows guardados se abren igual que antes; no hace falta cambiar nada en ellos.
