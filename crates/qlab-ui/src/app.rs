@@ -33,8 +33,8 @@ use crate::waveform::WaveformCache;
 
 /// Cadencia de dibujo mientras hay actividad.
 /// Alto inicial y mínimo del panel del Inspector (px).
-pub const INSPECTOR_DEFAULT_HEIGHT: f32 = 380.0;
-pub const INSPECTOR_MIN_HEIGHT: f32 = 340.0;
+pub const INSPECTOR_DEFAULT_HEIGHT: f32 = 300.0;
+pub const INSPECTOR_MIN_HEIGHT: f32 = 220.0;
 
 pub const ACTIVE_FRAME: Duration = Duration::from_millis(16);
 const TOAST_LIFETIME: Duration = Duration::from_secs(6);
@@ -231,6 +231,8 @@ pub struct QlabApp {
     pub telemetry: Telemetry,
     shm: Option<Arc<SharedMemory>>,
     pub inspector: InspectorState,
+    /// Panel inferior del Inspector desplegado (`Ctrl+I` para ocultar/mostrar y ganar espacio en 768p).
+    pub inspector_open: bool,
     /// Altura (px) que ocupó el panel del Inspector en el último fotograma.
     pub inspector_height: f32,
     pub(crate) waveforms: WaveformCache,
@@ -340,8 +342,10 @@ pub struct QlabApp {
     /// Pad para el que se está eligiendo archivo.
     cart_pick: Option<usize>,
     pfl_until: Option<Instant>,
-    /// Último archivo y volumen enviados al daemon por pad (para no recargar en cada letra que se teclea).
-    carts_prepared: std::collections::HashMap<usize, (String, u32)>,
+    /// Último archivo, volumen y ruta enviados al daemon por pad (para no recargar en cada letra que se teclea).
+    carts_prepared: std::collections::HashMap<usize, (String, u32, qlab_protocol::matrix::OutputRoute)>,
+    /// Banco de Carts a restaurar al reconectar el motor (tras cambiar de placa desde Carts).
+    restore_carts_after_connect: Option<qlab_protocol::cue_dto::CartBank>,
     autosave_due: Instant,
     autosave_inflight: bool,
     /// Autoguardado de una sesión que se cerró de golpe, pendiente de que el operador decida.
@@ -353,6 +357,10 @@ pub struct QlabApp {
     pub audio_ui: views::audio_settings::AudioSettingsUi,
     /// Show a recargar cuando el motor reiniciado vuelva a conectar (tras cambiar el audio).
     reload_show_after_connect: Option<std::path::PathBuf>,
+    /// Instantánea temporal guardada antes de reiniciar el motor embebido: `(temporal, show_path_original, show_dirty_original)`.
+    restart_snapshot: Option<(std::path::PathBuf, Option<std::path::PathBuf>, bool)>,
+    /// Al cargar la instantánea tras un reinicio de motor, restaurar `(show_path, show_dirty, temporal)`.
+    restore_after_snapshot: Option<(Option<std::path::PathBuf>, bool, std::path::PathBuf)>,
     embedded: Option<EmbeddedEngine>,
     engine_message: Option<String>,
     pending: HashMap<u64, Pending>,
@@ -389,6 +397,7 @@ impl QlabApp {
             telemetry: Telemetry::default(),
             shm: None,
             inspector: InspectorState::default(),
+            inspector_open: true,
             inspector_height: 0.0,
             waveforms: WaveformCache::new(move || wave_ctx.request_repaint()),
             picker: None,
@@ -459,6 +468,7 @@ impl QlabApp {
             cart_pick: None,
             pfl_until: None,
             carts_prepared: Default::default(),
+            restore_carts_after_connect: None,
             autosave_due: Instant::now() + Duration::from_secs(cfg.autosave_secs.unwrap_or(60)),
             autosave_inflight: false,
             recovery: None,
@@ -466,6 +476,8 @@ impl QlabApp {
             recent: cfg.settings_path.as_deref().map(|p| crate::settings::load_recent(&crate::settings::recent_path(p))).unwrap_or_default(),
             audio_ui: Default::default(),
             reload_show_after_connect: None,
+            restart_snapshot: None,
+            restore_after_snapshot: None,
             embedded: None,
             engine_message: None,
             pending: HashMap::new(),
@@ -521,6 +533,31 @@ impl QlabApp {
         }
     }
 
+    /// Placa principal activa: la configurada o la que el motor abrió realmente (`HelloInfo.device`).
+    fn active_main_device(&self) -> Option<String> {
+        self.cfg
+            .audio
+            .device
+            .clone()
+            .or_else(|| self.hello().map(|h| h.device.clone()).filter(|d| !d.is_empty()))
+    }
+
+    /// Abre «Configuración de audio» solo si no hay Bloqueo de función (salvo emergencia por pérdida de audio).
+    fn open_audio_settings(&mut self) {
+        if self.locked && self.audio_lost.is_none() {
+            self.lock_refuses();
+            return;
+        }
+        self.audio_ui.main_device = self.active_main_device();
+        self.audio_ui.open_with(&self.cfg.audio);
+    }
+
+    fn stop_all_carts_ui(&mut self) {
+        for i in 0..qlab_protocol::cue_dto::CART_PADS {
+            self.carts.mark_stopped(i);
+        }
+    }
+
     fn new_tag(&mut self, p: Pending) -> u64 {
         let tag = self.next_tag;
         self.next_tag += 1;
@@ -558,13 +595,17 @@ impl QlabApp {
                     self.pending.clear();
                     self.cues_requested = false;
                     self.request_cues();
-                    self.request_carts();
                     self.link.fire(ClientRequest::SetMasterDb { db: self.master_db });
                     self.link.fire(ClientRequest::SetMasterMono { on: self.prefs.master_mono });
                     self.send_stop_fades();
                     self.link.fire(ClientRequest::SetShowLock { on: self.locked });
-                    if let Some(path) = self.reload_show_after_connect.take() {
+                    if let Some((snap, orig_path, orig_dirty)) = self.restart_snapshot.take() {
+                        self.restore_after_snapshot = Some((orig_path, orig_dirty, snap.clone()));
+                        self.load_show_path(snap);
+                    } else if let Some(path) = self.reload_show_after_connect.take() {
                         self.load_show_path(path);
+                    } else {
+                        self.request_carts();
                     }
                 }
                 LinkEvent::Disconnected { reason } => {
@@ -716,7 +757,12 @@ impl QlabApp {
             (Pending::LoadShow(path), Ok(ServerResponse::ShowLoaded { name, cues, warnings })) => {
                 self.history.clear();
                 self.request_carts();
-                if let Some(original) = self.recover_as.take() {
+                if let Some((orig_path, orig_dirty, snap)) = self.restore_after_snapshot.take() {
+                    let _ = std::fs::remove_file(&snap);
+                    self.show_path = orig_path;
+                    self.show_dirty = orig_dirty;
+                    self.toast(ToastKind::Info, format!("Show restaurado tras reiniciar audio ({cues} cues)"));
+                } else if let Some(original) = self.recover_as.take() {
                     // Era un autoguardado: el show vuelve a ser el original, con cambios sin guardar.
                     self.show_path = original;
                     self.mark_dirty();
@@ -732,8 +778,22 @@ impl QlabApp {
                 // Los avisos ya llegaron como eventos `[show]` del daemon; repetirlos duplicaría cada toast.
                 let _ = warnings;
             }
-            (Pending::LoadShow(_), Ok(ServerResponse::Error { message })) => self.toast(ToastKind::Error, format!("No se pudo cargar el show: {message}")),
-            (Pending::LoadShow(_), Err(e)) => self.toast(ToastKind::Error, format!("No se pudo cargar el show: {e}")),
+            (Pending::LoadShow(_), Ok(ServerResponse::Error { message })) => {
+                if let Some((orig_path, orig_dirty, snap)) = self.restore_after_snapshot.take() {
+                    let _ = std::fs::remove_file(&snap);
+                    self.show_path = orig_path;
+                    self.show_dirty = orig_dirty;
+                }
+                self.toast(ToastKind::Error, format!("No se pudo cargar el show: {message}"));
+            }
+            (Pending::LoadShow(_), Err(e)) => {
+                if let Some((orig_path, orig_dirty, snap)) = self.restore_after_snapshot.take() {
+                    let _ = std::fs::remove_file(&snap);
+                    self.show_path = orig_path;
+                    self.show_dirty = orig_dirty;
+                }
+                self.toast(ToastKind::Error, format!("No se pudo cargar el show: {e}"));
+            }
             (Pending::NewShow, Ok(ServerResponse::ShowLoaded { .. })) => {
                 self.request_carts();
                 self.history.clear();
@@ -758,7 +818,15 @@ impl QlabApp {
             (Pending::CueSheet, Ok(ServerResponse::Error { message })) => self.toast(ToastKind::Error, format!("No se pudo exportar el guion: {message}")),
             (Pending::CueSheet, Err(e)) => self.toast(ToastKind::Error, format!("No se pudo exportar el guion: {e}")),
             (Pending::GetCarts, Ok(ServerResponse::Carts { bank })) => {
+                let bank = if let Some(saved) = self.restore_carts_after_connect.take() {
+                    self.link.fire(ClientRequest::SetCarts { bank: saved.clone() });
+                    self.mark_dirty();
+                    saved
+                } else {
+                    bank
+                };
                 self.carts.set_bank(bank);
+                self.carts_prepared.clear();
                 for i in 0..qlab_protocol::cue_dto::CART_PADS {
                     self.prepare_pad(i);
                 }
@@ -1057,6 +1125,7 @@ impl QlabApp {
     pub fn panic_press(&mut self) {
         self.note_stop_for_resume();
         self.end_rehearsal_loop();
+        self.stop_all_carts_ui();
         let hard = self.panic_at.is_some_and(|t| t.elapsed() < DOUBLE_PANIC);
         self.panic_at = Some(Instant::now());
         self.link.fire(if hard { ClientRequest::HardStopAll } else { ClientRequest::Panic });
@@ -1095,6 +1164,22 @@ impl QlabApp {
             // Entrar en función: los puntos de ensayo se quitan y cada cue vuelve a su arranque.
             self.pending_resume = None;
             self.restore_resume_points();
+            // Aviso preventivo si alguna cue quedó con velocidad alterada del ensayo (rate != 1.0).
+            let draft_rate = self.inspector.draft.as_ref().and_then(|d| crate::views::inspector::time_loops_ref(&d.node).map(|t| (d.id(), t.rate)));
+            let altered: Vec<String> = self
+                .model
+                .summaries
+                .iter()
+                .filter_map(|c| {
+                    let rate = draft_rate.filter(|(id, _)| *id == c.id).map_or(c.rate, |(_, r)| r);
+                    ((rate - 1.0).abs() > 1e-3).then(|| format!("Q{} ({:.2}x)", c.number, rate))
+                })
+                .collect();
+            if !altered.is_empty() {
+                let shown: Vec<&str> = altered.iter().take(4).map(String::as_str).collect();
+                let extra = if altered.len() > shown.len() { format!(" y {} más", altered.len() - shown.len()) } else { String::new() };
+                self.toast(ToastKind::Warn, format!("Atención: velocidad alterada (no 1.00x) en {}{extra}", shown.join(", ")));
+            }
         }
         self.link.fire(ClientRequest::SetShowLock { on: self.locked });
         self.hud(if self.locked { "Bloqueo de función: ACTIVADO" } else { "Bloqueo de función: desactivado" });
@@ -1128,11 +1213,13 @@ impl QlabApp {
             Action::Panic => self.panic_press(),
             Action::HardStopAll => {
                 self.note_stop_for_resume();
+                self.stop_all_carts_ui();
                 self.link.fire(ClientRequest::HardStopAll);
             }
             Action::StopAll => {
                 self.note_stop_for_resume();
                 self.end_rehearsal_loop();
+                self.stop_all_carts_ui();
                 self.link.fire(ClientRequest::StopAll);
             }
             Action::PauseAll => self.link.fire(ClientRequest::PauseAll),
@@ -1190,7 +1277,7 @@ impl QlabApp {
             Action::MoveSelected(delta) => self.move_selected(delta),
             Action::RetryConnection => self.link.retry_now(),
             Action::RetryAudio => self.link.fire(ClientRequest::RetryAudio),
-            Action::ChooseAudioOutput => self.audio_ui.open_with(&self.cfg.audio),
+            Action::ChooseAudioOutput => self.open_audio_settings(),
             Action::StartEmbedded { with_audio } => self.start_embedded(with_audio),
             Action::LaunchDaemonProcess => match standalone::launch_daemon_process(&self.cfg.socket, &self.cfg.audio) {
                 Ok(()) => {
@@ -1286,7 +1373,9 @@ impl QlabApp {
             Some(cue) => views::projection_viewport::Content { texture: self.video.texture_of(cue).cloned(), fit: self.video_meta.get(&cue).map_or(VideoFit::Fit, |m| m.fit) },
             None => views::projection_viewport::Content { texture: None, fit: VideoFit::Fit },
         };
-        self.projection.show(ctx, &content);
+        if self.projection.show(ctx, &content) {
+            self.panic_press();
+        }
     }
 
     // -- Autoría y archivos --------------------------------------------------------------------------
@@ -1798,8 +1887,10 @@ impl QlabApp {
 
     /// Deja listo el reproductor del pad `i` (carga el archivo para que suene sin demora al pulsar).
     fn prepare_pad(&mut self, i: usize) {
+        self.carts.mark_stopped(i);
         let Some(pad) = self.carts.bank.pads.get(i).filter(|p| !p.is_empty()).cloned() else { return };
         self.carts.duration[i] = None;
+        self.carts_prepared.insert(i, (pad.path.clone(), pad.gain_db.to_bits(), pad.route));
         let tag = self.new_tag(Pending::CartLoad(i));
         self.link.request(tag, ClientRequest::AdhocLoad { slot: i as u32, path: pad.path, gain_db: pad.gain_db, monitor: false, start_secs: 0.0, route: pad.route });
     }
@@ -1833,14 +1924,14 @@ impl QlabApp {
 
     fn carts_ui(&mut self, ctx: &egui::Context) {
         self.carts.outputs = self.route_outputs();
+        self.carts.main_device = self.active_main_device();
+        self.carts.extra_outputs_live = self.hello().map(|h| h.extra_outputs.clone()).unwrap_or_default();
         for ev in views::carts::show(ctx, &mut self.carts, self.locked) {
             match ev {
                 views::carts::CartEvent::Press(i) => self.cart_press(i),
                 views::carts::CartEvent::Release(i) => self.cart_release(i),
                 views::carts::CartEvent::StopAll => {
-                    for i in 0..qlab_protocol::cue_dto::CART_PADS {
-                        self.carts.mark_stopped(i);
-                    }
+                    self.stop_all_carts_ui();
                     self.link.fire(ClientRequest::AdhocStopAll);
                 }
                 views::carts::CartEvent::Browse(i) => {
@@ -1850,16 +1941,82 @@ impl QlabApp {
                     }
                 }
                 views::carts::CartEvent::Edited(i) => self.cart_edited(i),
+                views::carts::CartEvent::SetAllRoutes(route) => self.set_all_cart_routes(route),
+                views::carts::CartEvent::UseDeviceForAll(device) => self.set_carts_device(device),
+                views::carts::CartEvent::OpenAudioSettings => self.open_audio_settings(),
             }
         }
     }
 
-    /// Cambió un pad: se guarda en el daemon (y con el show) y, si cambió el archivo o el volumen, se vuelve a preparar.
+    /// Cambia la salida de todos los pads de Carts a `route` y los vuelve a preparar en el daemon.
+    fn set_all_cart_routes(&mut self, route: qlab_protocol::matrix::OutputRoute) {
+        self.carts.default_route = route;
+        for pad in &mut self.carts.bank.pads {
+            pad.route = route;
+        }
+        self.link.fire(ClientRequest::SetCarts { bank: self.carts.bank.clone() });
+        self.mark_dirty();
+        for i in 0..qlab_protocol::cue_dto::CART_PADS {
+            let pad = &self.carts.bank.pads[i];
+            if !pad.is_empty() && std::path::Path::new(&pad.path).is_file() {
+                self.prepare_pad(i);
+            }
+        }
+        let label = self.carts.outputs.label(route);
+        self.toast(ToastKind::Info, format!("Salida de Carts: {label}"));
+    }
+
+    /// Asigna directamente otra placa de sonido del sistema a una salida adicional y manda todos los Carts por ella.
+    fn set_carts_device(&mut self, device_name: String) {
+        let mut audio = self.cfg.audio.clone();
+        let mut replaced_card: Option<String> = None;
+        let slot = if let Some(idx) = audio.extra_outputs.iter().position(|n| n.eq_ignore_ascii_case(&device_name)) {
+            idx
+        } else if let Some(idx) = audio.extra_outputs.iter().position(|n| n.trim().is_empty()) {
+            audio.extra_outputs[idx] = device_name.clone();
+            idx
+        } else if audio.extra_outputs.len() < qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS {
+            audio.extra_outputs.push(device_name.clone());
+            audio.extra_outputs.len() - 1
+        } else {
+            let idx = qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS - 1;
+            replaced_card = Some(audio.extra_outputs[idx].clone());
+            audio.extra_outputs[idx] = device_name.clone();
+            idx
+        };
+        let route = qlab_protocol::matrix::OutputRoute {
+            output: (slot + 1) as u8,
+            side: qlab_protocol::matrix::RouteSide::Both,
+        };
+        self.carts.default_route = route;
+        for pad in &mut self.carts.bank.pads {
+            pad.route = route;
+        }
+        self.mark_dirty();
+        let sanitized = audio.sanitized();
+        if sanitized != self.cfg.audio {
+            if self.embedded_running() {
+                self.restore_carts_after_connect = Some(self.carts.bank.clone());
+            } else {
+                self.link.fire(ClientRequest::SetCarts { bank: self.carts.bank.clone() });
+            }
+            self.apply_audio_settings(sanitized);
+            if let Some(old_card) = replaced_card {
+                self.toast(ToastKind::Warn, format!("Salidas adicionales llenas: se reemplazó «{old_card}» en Salida {} por «{device_name}»", slot + 2));
+            } else {
+                self.toast(ToastKind::Info, format!("Carts salen por Salida {} ({device_name})", slot + 2));
+            }
+        } else {
+            self.set_all_cart_routes(route);
+        }
+    }
+
+    /// Cambió un pad: se guarda en el daemon (y con el show) y, si cambió el archivo, el volumen o la ruta, se vuelve a preparar.
     fn cart_edited(&mut self, i: usize) {
         self.link.fire(ClientRequest::SetCarts { bank: self.carts.bank.clone() });
         self.mark_dirty();
         let pad = self.carts.bank.pads[i].clone();
-        let key = (pad.path.clone(), pad.gain_db.to_bits());
+        let key = (pad.path.clone(), pad.gain_db.to_bits(), pad.route);
         if self.carts_prepared.get(&i) != Some(&key) {
             self.carts_prepared.insert(i, key);
             if pad.is_empty() {
@@ -1879,8 +2036,13 @@ impl QlabApp {
         let Some(i) = self.cart_pick.take() else { return };
         self.carts.open = true;
         self.carts.editing = Some(i);
+        let default_route = self.carts.default_route;
         let pad = &mut self.carts.bank.pads[i];
+        let was_empty = pad.is_empty();
         pad.path = path.to_string_lossy().into_owned();
+        if was_empty {
+            pad.route = default_route;
+        }
         if pad.name.trim().is_empty() {
             pad.name = show_name_of(&path);
         }
@@ -2829,7 +2991,8 @@ impl QlabApp {
 
     // -- Configuración de audio ---------------------------------------------------------------------
 
-    /// Guarda los ajustes y, si el motor es el embebido, lo reinicia con ellos (recargando el show abierto).
+    /// Guarda los ajustes y, si el motor es el embebido, lo reinicia con ellos (preservando todo el show actual,
+    /// incluso cambios sin guardar, mediante una instantánea temporal).
     fn apply_audio_settings(&mut self, s: crate::settings::AudioSettings) {
         if let Some(path) = &self.cfg.settings_path {
             if let Err(e) = crate::settings::save(path, &s) {
@@ -2838,7 +3001,32 @@ impl QlabApp {
         }
         self.cfg.audio = s;
         if self.embedded_running() {
-            self.reload_show_after_connect = self.show_path.clone();
+            self.restart_snapshot = None;
+            self.reload_show_after_connect = None;
+            if self.is_connected() {
+                let snap = std::env::temp_dir().join(format!("teatrocue-restart-{}-{}.teatroshow", std::process::id(), self.edits));
+                let saved = qlab_protocol::ipc_client::IpcClient::connect(&self.link_socket)
+                    .ok()
+                    .and_then(|c| {
+                        c.request(
+                            ClientRequest::SaveShow {
+                                path: snap.to_string_lossy().into_owned(),
+                                name: self.model.show_name.clone(),
+                                rehearsal: self.rehearsal_state(),
+                            },
+                            Duration::from_secs(5),
+                        )
+                        .ok()
+                    })
+                    .is_some_and(|r| matches!(r, ServerResponse::ShowSaved { .. }));
+                if saved {
+                    self.restart_snapshot = Some((snap, self.show_path.clone(), self.show_dirty));
+                } else {
+                    self.reload_show_after_connect = self.show_path.clone();
+                }
+            } else {
+                self.reload_show_after_connect = self.show_path.clone();
+            }
             if let Some(mut e) = self.embedded.take() {
                 e.stop();
             }
@@ -3007,7 +3195,7 @@ impl QlabApp {
         }
 
         // El evento de «empezó a sonar» llega por el socket unos milisegundos antes que la telemetría.
-        active |= self.model.any_running();
+        active |= self.model.any_running() || self.carts.any_playing(now);
 
         self.video_tick(ctx);
         self.handle_drops(ctx);
@@ -3059,7 +3247,7 @@ impl QlabApp {
         // Pausa llegan siempre (F1 está al lado de Esc). Sin Bloqueo, GO y Pausa pasan sobre las ventanas de lectura
         // (Ayuda, Novedades, que se abre sola después de actualizar, Acerca de) mientras no se escriba en un campo, y
         // Esc sigue siendo «cerrar la ventana».
-        let input_dialog = self.prefs_ui.open || self.picker.is_some() || self.confirm.is_some() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open;
+        let input_dialog = self.prefs_ui.open || self.picker.is_some() || self.confirm.is_some() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open || self.audio_tools.open;
         if (input_dialog || self.help.any_open()) && (keys.go || keys.panic || keys.pause) {
             let typing = ctx.egui_wants_keyboard_input();
             if self.locked || (!input_dialog && !typing && !keys.panic) {
@@ -3095,9 +3283,9 @@ impl QlabApp {
             // Al entrar en función ningún campo se queda con el foco: Espacio y Esc son del show.
             Self::drop_focus(ctx);
         }
-        // Con un cuadro modal abierto (nombre de memoria, recuperación de sesión, configuración de audio) las teclas son
-        // suyas: Esc lo cierra y NO debe disparar un Panic, ni Espacio un GO, mientras se está en medio de otra cosa.
-        if self.picker.is_some() || self.confirm.is_some() || self.help.any_open() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open {
+        // Con un cuadro modal abierto (nombre de memoria, recuperación de sesión, configuración de audio, importar audio)
+        // las teclas son suyas: Esc lo cierra y NO debe disparar un Panic, ni Espacio un GO, mientras se está en otra cosa.
+        if self.picker.is_some() || self.confirm.is_some() || self.help.any_open() || self.quick_memory.is_some() || self.recovery.is_some() || self.audio_ui.open || self.audio_tools.open {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
@@ -3129,6 +3317,9 @@ impl QlabApp {
         }
         if keys.carts {
             self.carts.open = !self.carts.open;
+        }
+        if keys.toggle_inspector {
+            self.inspector_open = !self.inspector_open;
         }
         if keys.go {
             self.go();
@@ -3308,6 +3499,7 @@ impl QlabApp {
         self.show_confirm(&ctx);
         self.show_recovery(&ctx);
         self.carts_ui(&ctx);
+        self.audio_ui.main_device = self.active_main_device();
         let note = if self.embedded_running() { "Motor embebido: los cambios se aplican al instante." } else { "El motor es un proceso aparte (o está apagado): los ajustes se guardan y valen al relanzarlo desde esta aplicación." };
         if let Some(views::audio_settings::Outcome::Apply(s)) = views::audio_settings::show(&ctx, &mut self.audio_ui, note) {
             self.apply_audio_settings(s);
@@ -3410,10 +3602,31 @@ impl QlabApp {
             ConnState::Connected(h) => Some(h.clone()),
             _ => None,
         };
-        let view = ViewCtx { model: &self.model, telemetry: &self.telemetry, hello: hello.as_ref(), safe_mute: self.safe_mute, master_db: self.master_db, master_mono: self.prefs.master_mono, scroll_to_selected: std::mem::take(&mut self.scroll_to_selected) };
+        let view = ViewCtx { model: &self.model, telemetry: &self.telemetry, hello: hello.as_ref(), safe_mute: self.safe_mute, master_db: self.master_db, master_mono: self.prefs.master_mono, locked: self.locked, scroll_to_selected: std::mem::take(&mut self.scroll_to_selected) };
 
         if let Some(reason) = &self.audio_lost {
             egui::Panel::top("sin_audio").show(ui, |ui| Self::audio_lost_banner(ui, reason, actions));
+        }
+        if self.locked {
+            egui::Panel::top("lock_banner").show(ui, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(0x4a, 0x33, 0x06))
+                    .stroke(egui::Stroke::new(1.5, theme::AMBER))
+                    .inner_margin(egui::Margin::symmetric(10, 4))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("MODO FUNCIÓN (BLOQUEADO)").strong().color(theme::AMBER));
+                            ui.label(RichText::new("Edición, borrado y doble clic desactivados.").small().color(theme::TEXT));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let lock_key = self.prefs.keys.primary(crate::prefs::Command::Lock);
+                                if ui.small_button(format!("Desbloquear ({lock_key})")).clicked() {
+                                    actions.push(Action::ToggleLock);
+                                }
+                            });
+                        });
+                    });
+            });
         }
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -3473,12 +3686,18 @@ impl QlabApp {
                         self.carts.open = !self.carts.open;
                         ui.close();
                     }
+                    let insp_key = self.prefs.keys.primary(crate::prefs::Command::ToggleInspector);
+                    if ui.button(if self.inspector_open { format!("Ocultar Inspector ({insp_key})") } else { format!("Mostrar Inspector ({insp_key})") }).clicked() {
+                        self.inspector_open = !self.inspector_open;
+                        ui.close();
+                    }
                     if ui.button(if self.memories_open { "Ocultar panel de memorias" } else { "Memorias…" }).clicked() {
                         self.memories_open = !self.memories_open;
                         ui.close();
                     }
-                    if ui.button("Configuración de audio…").clicked() {
-                        self.audio_ui.open_with(&self.cfg.audio);
+                    let audio_allowed = !self.locked || self.audio_lost.is_some();
+                    if ui.add_enabled(audio_allowed, egui::Button::new("Configuración de audio…")).clicked() {
+                        actions.push(Action::ChooseAudioOutput);
                         ui.close();
                     }
                     if ui.button(if self.projection.open { "Cerrar pantalla de proyección" } else { "Abrir pantalla de proyección" }).clicked() {
@@ -3488,7 +3707,7 @@ impl QlabApp {
                 });
                 ui.menu_button("Opciones", |ui| {
                     let mut changed = false;
-                    if ui.checkbox(&mut self.prefs.resume_after_stop, "Retomar desde donde se paró (ensayo)").on_hover_text("Al parar con PANIC o «Parar todo», el próximo GO retoma la música desde ese punto (con el pre-roll). No actúa con el Bloqueo de función").changed() {
+                    if ui.add_enabled(!self.locked, egui::Checkbox::new(&mut self.prefs.resume_after_stop, "Retomar desde donde se paró (ensayo)")).on_hover_text("Al parar con PANIC o «Parar todo», el próximo GO retoma la música desde ese punto (con el pre-roll). No actúa con el Bloqueo de función").changed() {
                         changed = true;
                     }
                     if crate::system_sounds::SUPPORTED && ui.checkbox(&mut self.prefs.mute_system_sounds, "Silenciar los sonidos de Windows").on_hover_text("Notificaciones y avisos de Windows no salen por los parlantes mientras TeatroCue está abierto").changed() {
@@ -3544,6 +3763,20 @@ impl QlabApp {
                     if ui.add(btn).on_hover_text(if on { "Cierra la ventana de proyección" } else { "Abre la ventana secundaria para el proyector" }).clicked() {
                         actions.push(Action::OpenProjector);
                     }
+                    // Interruptor de Botonera de Carts: se resalta en ámbar mientras algún pad está sonando.
+                    let carts_playing = self.carts.any_playing(Instant::now());
+                    let carts_key = self.prefs.keys.primary(crate::prefs::Command::Carts);
+                    let carts_text = if carts_playing {
+                        RichText::new("Carts · SUENA").strong().color(Color32::BLACK)
+                    } else if self.carts.open {
+                        RichText::new(format!("Carts ({carts_key})")).strong().color(theme::AMBER)
+                    } else {
+                        RichText::new(format!("Carts ({carts_key})"))
+                    };
+                    let carts_btn = egui::Button::new(carts_text).fill(if carts_playing { theme::AMBER } else { ui.visuals().widgets.inactive.weak_bg_fill });
+                    if ui.add(carts_btn).on_hover_text("Abrir u ocultar la Botonera de Carts (efectos y anuncios)").clicked() {
+                        self.carts.open = !self.carts.open;
+                    }
                     ui.separator();
                     let locked_now = self.locked;
                     let lock_label = RichText::new(if self.locked { "Función BLOQUEADA" } else { "Bloqueo de función" }).strong().color(if self.locked { theme::AMBER } else { theme::TEXT });
@@ -3551,8 +3784,8 @@ impl QlabApp {
                         actions.push(Action::ToggleLock);
                     }
                     let resume = self.prefs.resume_after_stop;
-                    let resume_label = RichText::new("Retomar al parar").strong().color(if resume { theme::AMBER } else { theme::TEXT });
-                    if ui.selectable_label(resume, resume_label).on_hover_text("Ensayo: al parar con PANIC o «Parar todo», el próximo GO retoma la música desde ese punto (con el pre-roll). Con el Bloqueo de función no actúa").clicked() {
+                    let resume_label = RichText::new("Retomar al parar").strong().color(if self.locked { theme::TEXT_DIM } else if resume { theme::AMBER } else { theme::TEXT });
+                    if ui.add_enabled(!self.locked, egui::Button::selectable(resume, resume_label)).on_hover_text("Ensayo: al parar con PANIC o «Parar todo», el próximo GO retoma la música desde ese punto (con el pre-roll). Desactivado con el Bloqueo de función").clicked() {
                         self.prefs.resume_after_stop = !resume;
                         actions.push(Action::PrefsChanged);
                     }
@@ -3601,14 +3834,31 @@ impl QlabApp {
         // menos que su tamaño guardado (p. ej. mientras el Inspector recarga el borrador tras un GO), y se
         // quedaba en `min_size`. Llenar el alto disponible fija la altura que haya arrastrado el usuario.
         let route_outputs = self.route_outputs();
-        let panel = egui::Panel::bottom("global_inspector_panel").resizable(true).default_size(INSPECTOR_DEFAULT_HEIGHT).min_size(INSPECTOR_MIN_HEIGHT).show(ui, |ui| {
-            ui.set_min_height(ui.available_height());
-            let repair_state = self.inspector.draft.as_ref().and_then(crate::views::inspector::tab_time_loops::file_path_of).and_then(|p| self.repairs.get(&p).cloned());
-            let mut cx = TabCtx { model: &self.model, telemetry: &self.telemetry, waveforms: &mut self.waveforms, device_channels: hello.as_ref().map_or(2, |h| h.channels as usize), preroll: self.memories_panel.preroll, video: &mut self.video, repair: repair_state, memory_key: self.prefs.keys.primary(crate::prefs::Command::Memory), outputs: route_outputs.clone() };
-            inspector::show(ui, &mut self.inspector, &mut cx, &mut out);
-        });
-        self.inspector_height = panel.response.rect.height();
-        self.inspector_rect = panel.response.rect;
+        if self.inspector_open {
+            let panel = egui::Panel::bottom("global_inspector_panel").resizable(true).default_size(INSPECTOR_DEFAULT_HEIGHT).min_size(INSPECTOR_MIN_HEIGHT).show(ui, |ui| {
+                ui.set_min_height(ui.available_height());
+                let repair_state = self.inspector.draft.as_ref().and_then(crate::views::inspector::tab_time_loops::file_path_of).and_then(|p| self.repairs.get(&p).cloned());
+                let mut cx = TabCtx { model: &self.model, telemetry: &self.telemetry, waveforms: &mut self.waveforms, device_channels: hello.as_ref().map_or(2, |h| h.channels as usize), preroll: self.memories_panel.preroll, video: &mut self.video, repair: repair_state, memory_key: self.prefs.keys.primary(crate::prefs::Command::Memory), outputs: route_outputs.clone() };
+                inspector::show(ui, &mut self.inspector, &mut cx, &mut out);
+            });
+            self.inspector_height = panel.response.rect.height();
+            self.inspector_rect = panel.response.rect;
+        } else {
+            egui::Panel::bottom("global_inspector_collapsed").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let insp_key = self.prefs.keys.primary(crate::prefs::Command::ToggleInspector);
+                    if ui.small_button(format!("Mostrar Inspector ({insp_key})")).clicked() {
+                        self.inspector_open = true;
+                    }
+                    ui.label(RichText::new("Inspector oculto para ver más cues en pantalla").small().color(theme::TEXT_DIM));
+                });
+            });
+            self.inspector_height = 0.0;
+            self.inspector_rect = egui::Rect::NOTHING;
+        }
+        if out.toggle_collapse {
+            self.inspector_open = false;
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             views::cue_table::show(ui, &view, actions);
         });
@@ -3787,6 +4037,7 @@ pub struct Keys {
     pub memory: bool,
     pub memory_enter: bool,
     pub carts: bool,
+    pub toggle_inspector: bool,
     pub lock: bool,
     /// P: pausar / reanudar.
     pub pause: bool,
@@ -3824,6 +4075,7 @@ pub fn scan_keys_with(i: &egui::InputState, map: &crate::prefs::Keymap) -> Keys 
             k.duplicate |= on(C::Duplicate);
             k.help |= on(C::Help);
             k.carts |= on(C::Carts);
+            k.toggle_inspector |= on(C::ToggleInspector);
             k.lock |= on(C::Lock);
             k.pause |= on(C::Pause);
             k.delete |= on(C::Delete);

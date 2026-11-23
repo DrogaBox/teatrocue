@@ -11,24 +11,8 @@ use qlab_daemon::{AllocCheck, Daemon};
 #[global_allocator]
 static ALLOCATOR: qlab_engine::alloc_guard::RtGuardAllocator = qlab_engine::alloc_guard::RtGuardAllocator::system();
 
-/// Con la feature `enforce-license`, sin un `license.key` válido para esta PC el proceso termina con código 1
-/// **antes** de abrir ningún dispositivo de audio. Sin la feature (desarrollo) no se exige.
+/// Versión libre sin licencia: nunca bloquea el arranque.
 fn license_gate() -> Option<ExitCode> {
-    #[cfg(feature = "enforce-license")]
-    {
-        let status = qlab_license::check_installed();
-        if let Some(msg) = qlab_license::lock_message(&status) {
-            eprintln!("[TeatroCue] {msg}");
-            return Some(ExitCode::from(1));
-        }
-        if let Ok(l) = &status.result {
-            let term = match l.days_left(status.now) {
-                None => "sin vencimiento".to_string(),
-                Some(_) => format!("vence el {} (quedan {} días)", qlab_license::fmt_date(status.effective_expires_unix), (status.effective_expires_unix as i64 - status.now as i64).div_euclid(86_400)),
-            };
-            eprintln!("[TeatroCue] licencia válida: {} · {} · {term}", l.licensee, l.machine);
-        }
-    }
     None
 }
 
@@ -87,10 +71,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    #[cfg(feature = "enforce-license")]
-    {
-        cfg.license = Some(qlab_license::activation::Setup::installed());
-    }
+    // Versión libre: no se adjunta verificación de licencia al daemon.
     // La variable de entorno completa a la línea de órdenes (útil en servicios y CI).
     if let Ok(v) = std::env::var("TEATROCUE_RT_ALLOC_CHECK") {
         match parse_alloc_check(&v) {

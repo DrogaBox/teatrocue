@@ -106,7 +106,7 @@ pub fn show(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>) {
                 });
 
                 let resp = row.response();
-                if resp.double_clicked() {
+                if resp.double_clicked() && !v.locked {
                     actions.push(Action::FireCue(c.id));
                 } else if resp.clicked() {
                     actions.push(Action::SelectCue(c.id));
@@ -119,7 +119,7 @@ pub fn show(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>) {
                         actions.push(Action::SetPlayhead(c.id));
                         ui.close();
                     }
-                    if ui.button("Disparar esta cue").clicked() {
+                    if ui.add_enabled(!v.locked, egui::Button::new("Disparar esta cue")).clicked() {
                         actions.push(Action::FireCue(c.id));
                         ui.close();
                     }
@@ -318,13 +318,15 @@ fn action_cell(ui: &mut Ui, c: &CueSummary, info: Option<RunningInfo>, s: &RowSt
     match (info, c.duration) {
         (Some(i), duration) if matches!(i.phase, Some(CueUiPhase::Action | CueUiPhase::TailingOut | CueUiPhase::PostWait)) => {
             let elapsed = i.action_elapsed as f64;
+            let (fill, fg) = if s.state == CueUiState::Paused { (theme::AMBER_DIM, theme::AMBER) } else { (theme::GREEN_DARK, theme::GREEN) };
             match duration {
                 Some(d) if d > 0.0 => {
-                    let text = format!("{} / {}", fmt_time(elapsed), fmt_time(d));
-                    widgets::progress_bar(ui, size, (elapsed / d) as f32, theme::GREEN_DARK, &text, theme::GREEN);
+                    let text = if s.state == CueUiState::Paused { format!("PAUSA {} / {}", fmt_time(elapsed), fmt_time(d)) } else { format!("{} / {}", fmt_time(elapsed), fmt_time(d)) };
+                    widgets::progress_bar(ui, size, (elapsed / d) as f32, fill, &text, fg);
                 }
                 _ => {
-                    widgets::progress_bar(ui, size, 1.0, theme::GREEN_DARK, &format!("{} / inf", fmt_time(elapsed)), theme::GREEN);
+                    let text = if s.state == CueUiState::Paused { format!("PAUSA {} / inf", fmt_time(elapsed)) } else { format!("{} / inf", fmt_time(elapsed)) };
+                    widgets::progress_bar(ui, size, 1.0, fill, &text, fg);
                 }
             }
         }

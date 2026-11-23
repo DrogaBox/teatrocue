@@ -122,9 +122,11 @@ fn hello_ping_and_status() {
     let f = simple("hello", RingProducer::IpcServer);
     let c = IpcClient::connect(&f.socket).unwrap();
     match req(&c, ClientRequest::Hello { client: "test".into(), protocol: IPC_PROTOCOL_VERSION }) {
-        ServerResponse::Hello { server_protocol, shm_name, sample_rate, channels, backend } => {
+        ServerResponse::Hello { server_protocol, shm_name, sample_rate, channels, backend, device, extra_outputs } => {
             assert_eq!((server_protocol, sample_rate, channels, backend.as_str()), (IPC_PROTOCOL_VERSION, 48_000, 2, "null"));
             assert_eq!(shm_name, f.daemon.shm().name());
+            assert_eq!(device, "dispositivo virtual");
+            assert!(extra_outputs.is_empty());
         }
         other => panic!("{other:?}"),
     }

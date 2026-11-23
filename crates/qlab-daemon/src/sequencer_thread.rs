@@ -405,6 +405,7 @@ pub fn cue_summaries(list: &CueList) -> Vec<CueSummary> {
             file_path: cue.basics.file_target.as_ref().map(|t| t.absolute_path.clone()).unwrap_or_default(),
             fade_in_secs: cue.audio_data().map_or(0.0, |a| a.time_loops.fade_in_secs),
             fade_out_secs: cue.audio_data().map_or(0.0, |a| a.time_loops.fade_out_secs),
+            rate: cue.audio_data().map_or(1.0, |a| a.time_loops.rate),
         });
         if let CueKind::Group(g) = &cue.kind {
             for &child in &g.children {

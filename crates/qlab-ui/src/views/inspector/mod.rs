@@ -153,12 +153,21 @@ pub struct InspectorOutput {
     pub repair: Option<(std::path::PathBuf, f64)>,
     /// «Usar la copia en esta cue».
     pub use_repaired: Option<std::path::PathBuf>,
+    /// Botón «Ocultar» en la cabecera del Inspector (Ctrl+I).
+    pub toggle_collapse: bool,
 }
 
 pub fn show(ui: &mut Ui, st: &mut InspectorState, cx: &mut TabCtx, out: &mut InspectorOutput) {
     let Some(draft) = st.draft.as_mut() else {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Ocultar").on_hover_text("Ocultar Inspector (Ctrl+I)").clicked() {
+                    out.toggle_collapse = true;
+                }
+            });
+        });
         ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
+            ui.add_space(16.0);
             ui.label(RichText::new("Selecciona una cue para editarla").color(theme::TEXT_DIM));
         });
         return;
@@ -202,7 +211,7 @@ pub fn show(ui: &mut Ui, st: &mut InspectorState, cx: &mut TabCtx, out: &mut Ins
         let name = if draft.node.basics.name.is_empty() { "(sin nombre)" } else { draft.node.basics.name.as_str() };
         let show_devamp = st.locked && matches!(draft.node.body, CueBody::Audio(_) | CueBody::Video(_)) && cx.telemetry.running.get(&draft.id()).is_some_and(|i| i.phase.is_some());
         // Lo que va a la derecha del nombre necesita su sitio; el nombre ocupa el resto y, si no entra, se desplaza.
-        let reserve = if draft.dirty() { 90.0 } else { 0.0 } + if show_devamp { 85.0 } else { 0.0 } + if matches!(draft.node.body, CueBody::Audio(_) | CueBody::Video(_)) { 55.0 } else { 0.0 };
+        let reserve = 74.0 + if draft.dirty() { 90.0 } else { 0.0 } + if show_devamp { 85.0 } else { 0.0 } + if matches!(draft.node.body, CueBody::Audio(_) | CueBody::Video(_)) { 55.0 } else { 0.0 };
         let width = (ui.available_width() - reserve).max(80.0);
         let font = egui::TextStyle::Body.resolve(ui.style());
         crate::widgets::marquee(ui, &format!("{} · {} · {}", draft.node.basics.number, name, kind), font, theme::TEXT_DIM, width, true);
@@ -223,6 +232,11 @@ pub fn show(ui: &mut Ui, st: &mut InspectorState, cx: &mut TabCtx, out: &mut Ins
                 out.pfl = true;
             }
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Ocultar").on_hover_text("Ocultar Inspector (Ctrl+I)").clicked() {
+                out.toggle_collapse = true;
+            }
+        });
     });
     ui.separator();
     let locked = st.locked;

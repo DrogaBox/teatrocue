@@ -52,6 +52,8 @@ pub struct HelloInfo {
     pub sample_rate: u32,
     pub channels: u16,
     pub backend: String,
+    pub device: String,
+    pub extra_outputs: Vec<Option<String>>,
 }
 
 pub enum LinkCommand {
@@ -301,7 +303,7 @@ impl Worker {
             }
         };
         let hello = match client.request(ClientRequest::Hello { client: "qlab-ui".into(), protocol: IPC_PROTOCOL_VERSION }, REQUEST_TIMEOUT) {
-            Ok(ServerResponse::Hello { shm_name, sample_rate, channels, backend, .. }) => HelloInfo { shm_name, sample_rate, channels, backend },
+            Ok(ServerResponse::Hello { shm_name, sample_rate, channels, backend, device, extra_outputs, .. }) => HelloInfo { shm_name, sample_rate, channels, backend, device, extra_outputs },
             Ok(ServerResponse::Error { message }) => {
                 self.emit(LinkEvent::Disconnected { reason: format!("el daemon rechazó la conexión: {message}") });
                 self.reported_down = true;

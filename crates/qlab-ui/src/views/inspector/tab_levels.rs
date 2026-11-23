@@ -45,8 +45,9 @@ const CELL_W: f32 = 64.0;
 
 pub fn show(ui: &mut Ui, d: &mut Draft, st: &mut LevelsUi, cx: &mut TabCtx, out: &mut InspectorOutput) {
     let id = d.id();
+    let has_target = d.node.basics.cue_target_id.is_some();
     match &mut d.node.body {
-        CueBody::Fade(f) => fade_editor(ui, f, cx),
+        CueBody::Fade(f) => fade_editor(ui, f, cx, has_target),
         CueBody::Group(_) => {
             ui.label(RichText::new("Los grupos no tienen niveles propios").color(theme::TEXT_DIM));
         }
@@ -147,11 +148,12 @@ fn matrix_editor(ui: &mut Ui, cue_id: u64, m: &mut AudioLevelMatrixData, st: &mu
             }
         });
         ui.separator();
-        ui.label(RichText::new(format!("{} entradas × {} salidas", m.inputs, m.outputs)).small().color(theme::TEXT_DIM));
+        let visible_outputs = if outs.main > 0 { (m.outputs as usize).min(outs.public_channels()) } else { m.outputs as usize };
+        ui.label(RichText::new(format!("{} entradas × {} salidas", m.inputs, visible_outputs)).small().color(theme::TEXT_DIM));
     });
     ui.add_space(4.0);
 
-    let (inputs, outputs) = (m.inputs as usize, m.outputs as usize);
+    let (inputs, outputs) = (m.inputs as usize, if outs.main > 0 { (m.outputs as usize).min(outs.public_channels()) } else { m.outputs as usize });
     let mut gang_clicks: Vec<(usize, usize)> = Vec::new();
     egui::Grid::new(("levels_grid", cue_id)).spacing([4.0, 6.0]).show(ui, |ui| {
         // Cabecera: una columna por salida con sus botones de mute y solo.
@@ -238,7 +240,7 @@ pub fn curve_value(c: FadeCurveDto, t: f32) -> f32 {
     }
 }
 
-pub fn fade_editor(ui: &mut Ui, f: &mut FadeBody, cx: &TabCtx) {
+pub fn fade_editor(ui: &mut Ui, f: &mut FadeBody, _cx: &TabCtx, has_target: bool) {
     ui.horizontal_wrapped(|ui| {
         widgets::section(ui, "Modo y curva", |ui| {
             ui.horizontal(|ui| {
@@ -295,8 +297,7 @@ pub fn fade_editor(ui: &mut Ui, f: &mut FadeBody, cx: &TabCtx) {
                 f.cells.push(FadeCellDto { row: 0, col: 0, target_db: MIN_VOLUME_DB, active: true });
             }
         });
-        let target_ok = cx.model.selected.is_some();
-        if f.cells.iter().all(|c| !c.active) && target_ok {
+        if f.cells.iter().all(|c| !c.active) && has_target {
             ui.label(RichText::new("Sin celdas activas: el fade no hará nada").small().color(theme::AMBER));
         }
         ui.label(RichText::new(format!("Rango de nivel: {MIN_VOLUME_DB:.0} dB (-inf) a +{MAX_VOLUME_DB:.0} dB.")).small().color(theme::TEXT_DIM));

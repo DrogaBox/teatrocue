@@ -101,6 +101,11 @@ impl BackendConfig {
         self.extra_output_first(self.extra_output_slots())
     }
 
+    /// Canales visibles para las cues y pads (principal + salidas adicionales, sin el bus interno de auriculares PFL).
+    pub fn cue_channels(&self) -> usize {
+        self.monitor_bus_first()
+    }
+
     /// El dispositivo de auriculares si es **otra placa** distinta de la principal.
     pub fn separate_monitor_device(&self) -> Option<&str> {
         let m = self.monitor_device.as_deref().map(str::trim).filter(|m| !m.is_empty())?;
@@ -342,7 +347,7 @@ impl RtRenderer {
                     buf.fill(0.0);
                 }
                 apply_safe_mute(&p.health, &mut self.mute_gain, inner, rate, buf);
-                apply_master(&p.health, &mut self.master_gain, inner, rate, buf);
+                apply_master(&p.health, &mut self.master_gain, inner, channels, rate, buf);
                 apply_mono(&p.health, &mut self.mono_mix, inner, channels, rate, buf);
                 for (f, frame) in buf.chunks_exact(inner).enumerate() {
                     data[(done + f) * channels..(done + f + 1) * channels].copy_from_slice(&frame[..channels]);
@@ -366,7 +371,7 @@ impl RtRenderer {
                 data.fill(0.0);
             }
             apply_safe_mute(&p.health, &mut self.mute_gain, self.channels, self.sample_rate, data);
-            apply_master(&p.health, &mut self.master_gain, self.channels, self.sample_rate, data);
+            apply_master(&p.health, &mut self.master_gain, self.channels, self.channels, self.sample_rate, data);
             apply_mono(&p.health, &mut self.mono_mix, self.channels, self.channels, self.sample_rate, data);
         }
         report_peaks(&p.shm, self.channels, data);
@@ -418,22 +423,24 @@ pub fn master_linear(db_x10: i32) -> f32 {
     }
 }
 
-/// Volumen maestro: aplica la ganancia con un suavizado de ~10 ms para que moverlo no deje chasquidos; sin coste
-/// cuando está en 0 dB.
+/// Volumen maestro: aplica la ganancia solo a la placa principal (`0..main`) con un suavizado de ~10 ms para que
+/// moverlo no deje chasquidos; sin coste cuando está en 0 dB. Las salidas adicionales (Salida 2..4: hall/Carts) y los
+/// auriculares (PFL) quedan fuera del maestro para que bajar la sala nunca silencie anuncios ni monitoreo.
 #[inline]
-fn apply_master(health: &Health, gain: &mut f32, channels: usize, sample_rate: u32, data: &mut [f32]) {
+fn apply_master(health: &Health, gain: &mut f32, channels: usize, main: usize, sample_rate: u32, data: &mut [f32]) {
     let target = master_linear(health.master_db_x10.load(Ordering::Relaxed));
     if (*gain - target).abs() < 1e-6 && target == 1.0 {
         return;
     }
     let coef = 1.0 - (-1.0 / (SAFE_MUTE_RAMP_SECS * sample_rate.max(1) as f32)).exp();
     let mut g = *gain;
-    // Los auriculares (PFL) quedan fuera del maestro: se escucha lo mismo aunque la sala esté a −20 dB.
+    let limit = main.min(channels);
+    // Los auriculares (PFL) en canales de la principal quedan fuera del maestro: se escucha igual aunque la sala esté a −20 dB.
     let mon = health.monitor_first.load(Ordering::Relaxed) as usize;
     let (mon_lo, mon_hi) = if mon > 0 { (mon - 1, mon + 1) } else { (usize::MAX, usize::MAX) };
     for frame in data.chunks_exact_mut(channels) {
         g += (target - g) * coef;
-        for (c, s) in frame.iter_mut().enumerate() {
+        for (c, s) in frame[..limit].iter_mut().enumerate() {
             if c < mon_lo || c >= mon_hi {
                 *s *= g;
             }
@@ -443,10 +450,9 @@ fn apply_master(health: &Health, gain: &mut f32, channels: usize, sample_rate: u
     *gain = if (g - target).abs() < 1e-5 { target } else { g };
 }
 
-/// Maestro en mono: en el par principal (fichas 1 y 2) y en el de cada salida adicional, izquierda y derecha pasan a
-/// ser su promedio. Sin pico nuevo: lo que estaba a los dos lados suena igual y lo paneado a uno, 6 dB más bajo en
-/// cada ficha. El cambio se funde en unos milisegundos (sin clic). Los auriculares quedan en estéreo. `channels`: los
-/// del bloque entrelazado; `main`: los de la placa principal (los pares extra empiezan ahí).
+/// Maestro en mono: solo en el par principal (fichas 1 y 2 de `0..main`), izquierda y derecha pasan a ser su promedio.
+/// Sin pico nuevo: lo que estaba a los dos lados suena igual y lo paneado a uno, 6 dB más bajo en cada ficha. El cambio
+/// se funde en unos milisegundos (sin clic). Las salidas adicionales (Salida 2..4) y los auriculares quedan en estéreo.
 #[inline]
 fn apply_mono(health: &Health, mix: &mut f32, channels: usize, main: usize, sample_rate: u32, data: &mut [f32]) {
     let target = if health.master_mono.load(Ordering::Relaxed) { 1.0 } else { 0.0 };
@@ -455,15 +461,15 @@ fn apply_mono(health: &Health, mix: &mut f32, channels: usize, main: usize, samp
     }
     let coef = 1.0 - (-1.0 / (SAFE_MUTE_RAMP_SECS * sample_rate.max(1) as f32)).exp();
     let mon = health.monitor_first.load(Ordering::Relaxed) as usize;
-    let pairs = (main >= 2).then_some(0).into_iter().chain((main..channels.saturating_sub(1)).step_by(2)).filter(|&first| mon == 0 || first != mon - 1);
+    let apply_main = main >= 2 && channels >= 2 && (mon == 0 || mon != 1);
     let mut a = *mix;
     for frame in data.chunks_exact_mut(channels) {
         a += (target - a) * coef;
-        for first in pairs.clone() {
-            let (l, r) = (frame[first], frame[first + 1]);
+        if apply_main {
+            let (l, r) = (frame[0], frame[1]);
             let half = 0.5 * a;
-            frame[first] = l + half * (r - l);
-            frame[first + 1] = r + half * (l - r);
+            frame[0] = l + half * (r - l);
+            frame[1] = r + half * (l - r);
         }
     }
     *mix = if (a - target).abs() < 1e-5 { target } else { a };
@@ -1352,21 +1358,52 @@ mod tests {
         let health = Health::default();
         let mut gain = 1.0f32;
         let mut block = vec![1.0f32; 2 * 4_800]; // 100 ms estéreo a 48 kHz
-        apply_master(&health, &mut gain, 2, 48_000, &mut block);
+        apply_master(&health, &mut gain, 2, 2, 48_000, &mut block);
         assert!(block.iter().all(|&s| s == 1.0) && gain == 1.0, "a 0 dB no se toca la señal");
         health.master_db_x10.store(-200, Ordering::Relaxed); // −20 dB
-        apply_master(&health, &mut gain, 2, 48_000, &mut block);
+        apply_master(&health, &mut gain, 2, 2, 48_000, &mut block);
         assert!(block[0] < 1.0 && block[0] > 0.5, "la primera muestra baja solo un poco (rampa): {}", block[0]);
         assert!(block.windows(4).all(|w| w[2] <= w[0] + 1e-7), "la rampa es monótona");
         let mut again = vec![1.0f32; 2 * 4_800];
-        apply_master(&health, &mut gain, 2, 48_000, &mut again);
+        apply_master(&health, &mut gain, 2, 2, 48_000, &mut again);
         assert!((again[again.len() - 1] - 0.1).abs() < 0.005, "tras 200 ms llega a −20 dB (0,1): {}", again[again.len() - 1]);
         health.master_db_x10.store(-600, Ordering::Relaxed);
         for _ in 0..10 {
             let mut b = vec![1.0f32; 2 * 4_800];
-            apply_master(&health, &mut gain, 2, 48_000, &mut b);
+            apply_master(&health, &mut gain, 2, 2, 48_000, &mut b);
         }
         assert_eq!(gain, 0.0, "silencio total");
+    }
+
+    #[test]
+    fn master_volume_and_mono_affect_only_main_hall_not_extra_outputs() {
+        let mut r = rig("extra_independent", true);
+        let extra_ring = FrameRing::new(MONITOR_BUS_CHANNELS, MONITOR_RING_FRAMES);
+        let mut parts = r.parts.clone();
+        parts.taps = vec![Arc::clone(&extra_ring)]; // Salida 2 en canales internos 2..4
+        r.pool.insert_voice(left_only_voice(1, 96_000, 4, 0)); // Sala (0..2): L=0.6, R=0.0
+        r.pool.insert_voice(left_only_voice(2, 96_000, 4, 2)); // Salida 2 (2..4): L=0.6, R=0.0
+        for id in [1, 2] {
+            assert!(r.cmd_tx.try_push(AudioCommand::Play { voice_id: id, start_host_time_ns: 0 }).is_ok());
+        }
+        r.health.master_db_x10.store(-600, Ordering::Relaxed); // MASTER de sala en -inf (silencio)
+        r.health.master_mono.store(true, Ordering::Relaxed); // MONO en sala
+        let mut renderer = RtRenderer::new(parts, 2, 48_000);
+        let mut room = vec![0.0f32; 480 * 2];
+        for _ in 0..20 {
+            renderer.render(&mut room);
+        }
+        assert!(room[room.len() - 2..].iter().all(|&s| s.abs() < 1e-5), "la sala queda muda por MASTER -inf: {:?}", &room[room.len() - 2..]);
+        // Extraemos lo último del anillo de Salida 2: debe conservar nivel 0.6 intacto y seguir en estéreo (L=0.6, R=0.0).
+        let mut drift = DriftConfig::new(48_000.0);
+        drift.target_fill_frames = 512.0;
+        let mut rs = DriftResampler::new(Arc::clone(&extra_ring), drift, 48_000.0, 48_000.0);
+        let mut s2 = vec![0.0f32; 480 * 2];
+        let n = rs.render(&mut s2);
+        assert!(n > 400);
+        let tail = &s2[(n - 1) * 2..n * 2];
+        assert!((tail[0] - 0.6).abs() < 1e-3 && tail[1].abs() < 1e-3, "Salida 2 no se ve afectada por MASTER ni MONO: {tail:?}");
+        assert_eq!(r.health.rt_alloc_violations.load(Ordering::Relaxed), 0);
     }
 
 }

@@ -45,8 +45,8 @@ fn add_node(list: &mut CueList, loader: &mut VoiceLoader, node: &CueNodeDto, par
                 Some(path) => loader.load_path(id, std::path::Path::new(&path), &a.time_loops, a.levels.as_ref()),
             };
             let default_levels = match &loaded {
-                Ok(info) => one_to_one(info.file.channels, loader.device_channels()),
-                Err(_) => one_to_one(2, loader.device_channels()),
+                Ok(info) => one_to_one(info.file.channels, loader.cue_channels()),
+                Err(_) => one_to_one(2, loader.cue_channels()),
             };
             let mut kind = node_to_kind(node, None, default_levels);
             match loaded {

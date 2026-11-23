@@ -178,16 +178,23 @@ fn legal_tab(ui: &mut Ui, license: &LicenseInfo, can_reactivate: bool, react: &m
     ui.add_space(12.0);
     heading(ui, "Licencia de esta PC");
     let (licensee, crypto, color) = license_lines(license);
+    let free = matches!(license.state, LicenseState::NotEnforced);
     egui::Grid::new("help_license").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
         ui.label(RichText::new("Licenciado a").color(theme::TEXT_DIM));
         ui.label(RichText::new(licensee).strong());
         ui.end_row();
-        ui.label(RichText::new("Machine ID").color(theme::TEXT_DIM));
-        ui.label(RichText::new(license.machine_id.as_deref().unwrap_or("(no disponible)")).monospace().strong().color(theme::GREEN));
-        ui.end_row();
-        ui.label(RichText::new("Estado criptográfico").color(theme::TEXT_DIM));
-        ui.label(RichText::new(crypto).color(color));
-        ui.end_row();
+        if free {
+            ui.label(RichText::new("Estado").color(theme::TEXT_DIM));
+            ui.label(RichText::new(crypto).strong().color(color));
+            ui.end_row();
+        } else {
+            ui.label(RichText::new("Machine ID").color(theme::TEXT_DIM));
+            ui.label(RichText::new(license.machine_id.as_deref().unwrap_or("(no disponible)")).monospace().strong().color(theme::GREEN));
+            ui.end_row();
+            ui.label(RichText::new("Estado criptográfico").color(theme::TEXT_DIM));
+            ui.label(RichText::new(crypto).color(color));
+            ui.end_row();
+        }
     });
     // Una licencia sin vencimiento no necesita reactivarse.
     let perpetual = matches!(license.state, LicenseState::Valid { days_left: None, .. });
@@ -210,7 +217,7 @@ pub fn license_lines(license: &LicenseInfo) -> (String, String, Color32) {
             (licensee.clone(), format!("Firma Ed25519 válida para esta PC · emitida el {} · {term}", fmt_date_utc(*issued_unix)), color)
         }
         LicenseState::Invalid { reason } => ("— sin licencia válida —".to_string(), format!("Rechazada: {reason}"), theme::RED),
-        LicenseState::NotEnforced => (DEFAULT_LICENSEE.to_string(), "Compilación de desarrollo: la licencia no se exige".to_string(), theme::AMBER),
+        LicenseState::NotEnforced => (DEFAULT_LICENSEE.to_string(), "Edición Libre · Ballet Oficial de Córdoba".to_string(), theme::GREEN),
     }
 }
 
@@ -277,7 +284,9 @@ pub fn show(ctx: &egui::Context, st: &mut HelpState, license: &LicenseInfo, can_
                 ui.add_space(8.0);
                 let (licensee, crypto, color) = license_lines(license);
                 ui.label(RichText::new(format!("Licenciado a: {licensee}")).strong());
-                ui.label(RichText::new(format!("Machine ID: {}", license.machine_id.as_deref().unwrap_or("(no disponible)"))).monospace());
+                if !matches!(license.state, LicenseState::NotEnforced) {
+                    ui.label(RichText::new(format!("Machine ID: {}", license.machine_id.as_deref().unwrap_or("(no disponible)"))).monospace());
+                }
                 ui.label(RichText::new(crypto).small().color(color));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -382,7 +391,10 @@ mod tests {
         assert!(license_lines(&forever).1.contains("sin vencimiento"));
         let bad = LicenseInfo { state: LicenseState::Invalid { reason: "la firma no es válida".into() }, machine_id: None, lock_text: None, reactivable: false };
         assert!(license_lines(&bad).1.contains("Rechazada"));
-        assert!(license_lines(&LicenseInfo::not_enforced()).1.contains("desarrollo"));
+        let (free_who, free_txt, free_col) = license_lines(&LicenseInfo::not_enforced());
+        assert_eq!(free_who, DEFAULT_LICENSEE);
+        assert_eq!(free_txt, "Edición Libre · Ballet Oficial de Córdoba");
+        assert_eq!(free_col, theme::GREEN);
     }
 
     #[test]

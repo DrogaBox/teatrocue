@@ -60,6 +60,8 @@ pub struct ServerInfo {
     pub sample_rate: u32,
     pub channels: u16,
     pub backend: String,
+    pub device: String,
+    pub extra_outputs: Vec<Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +80,7 @@ pub struct IpcContext {
     pub health: Arc<Health>,
     pub loader: Arc<Mutex<VoiceLoader>>,
     pub timebase: Timebase,
-    pub info: ServerInfo,
+    pub info: Mutex<ServerInfo>,
     pub ring_producer: RingProducer,
     pub shutdown: Arc<AtomicBool>,
     license: Option<qlab_license::activation::Setup>,
@@ -114,7 +116,7 @@ impl IpcContext {
             health,
             loader,
             timebase,
-            info,
+            info: Mutex::new(info),
             ring_producer,
             shutdown,
             license: None,
@@ -131,6 +133,11 @@ impl IpcContext {
     pub fn with_license(mut self, setup: Option<qlab_license::activation::Setup>) -> Self {
         self.license = setup;
         self
+    }
+
+    /// Actualiza la información expuesta en `Hello` (tras reiniciar el stream de audio).
+    pub fn update_info(&self, info: ServerInfo) {
+        *self.info.lock().expect("envenenado") = info;
     }
 
     /// Reactivación de emergencia en caliente: valida y aplica la clave; la licencia en memoria y en disco se actualiza
@@ -266,8 +273,8 @@ impl IpcContext {
         let id = cues.iter().map(|c| c.id).max().unwrap_or(0) + 1;
         let number = cues.iter().filter_map(|c| c.number.trim().parse::<u64>().ok()).max().unwrap_or(0) + 1;
         let node = CueNodeDto::new_default(kind, id, number.to_string());
-        let device_channels = self.loader.lock().expect("envenenado").device_channels();
-        let levels = qlab_protocol::matrix::AudioLevelMatrixData::new_one_to_one(2, device_channels.clamp(1, qlab_protocol::matrix::MAX_OUTPUT_CHANNELS)).map_err(|e| e.to_string())?;
+        let cue_channels = self.loader.lock().expect("envenenado").cue_channels();
+        let levels = qlab_protocol::matrix::AudioLevelMatrixData::new_one_to_one(2, cue_channels.clamp(1, qlab_protocol::matrix::MAX_OUTPUT_CHANNELS)).map_err(|e| e.to_string())?;
         let mut cue = qlab_core::cue::Cue::new(node.basics.clone(), node_to_kind(&node, None, levels));
         cue.triggers = node.triggers.clone();
         self.ask(|reply| SeqCommand::AddCue { cue: Box::new(cue), parent: parent.map(CueId), after: after.map(CueId), reply }, SEQUENCER_TIMEOUT)??;
@@ -336,12 +343,16 @@ impl IpcContext {
         let levels = if p.monitor {
             crate::adhoc::levels(probe.channels, loader.device_channels(), first_out, p.gain_db)
         } else {
-            // Una salida adicional sin placa: el pad sale por la principal, por las mismas fichas.
+            // Una salida adicional sin placa o fuera de rango: el pad sale por la principal, por las mismas fichas.
             let mut route = p.route;
-            if route.output > 0 && self.health.extra_outputs_live.load(Ordering::Relaxed) & (1 << (route.output - 1)) == 0 {
-                route.output = 0;
+            if route.output > 0 {
+                let idx = usize::from(route.output - 1);
+                let live = self.health.extra_outputs_live.load(Ordering::Relaxed);
+                if idx >= crate::backend_audio::MAX_EXTRA_OUTPUTS || (live & (1u32 << idx)) == 0 {
+                    route.output = 0;
+                }
             }
-            crate::adhoc::routed_levels(probe.channels, loader.device_channels(), self.health.main_channels.load(Ordering::Relaxed) as usize, route, p.gain_db)
+            crate::adhoc::routed_levels(probe.channels, loader.cue_channels(), self.health.main_channels.load(Ordering::Relaxed) as usize, route, p.gain_db)
         };
         let time = AudioTimeAndLoopsData { start_time_sec: p.start_secs.max(0.0), file_sample_rate: probe.sample_rate, ..Default::default() };
         let id = CueId(crate::adhoc::voice_id(slot));
@@ -507,12 +518,15 @@ impl IpcContext {
                 if protocol > IPC_PROTOCOL_VERSION {
                     return ServerResponse::Error { message: format!("el cliente habla el protocolo {protocol}; el daemon, el {IPC_PROTOCOL_VERSION}") };
                 }
+                let info = self.info.lock().expect("envenenado").clone();
                 ServerResponse::Hello {
                     server_protocol: IPC_PROTOCOL_VERSION,
-                    shm_name: self.info.shm_name.clone(),
-                    sample_rate: self.info.sample_rate,
-                    channels: self.info.channels,
-                    backend: self.info.backend.clone(),
+                    shm_name: info.shm_name,
+                    sample_rate: info.sample_rate,
+                    channels: info.channels,
+                    backend: info.backend,
+                    device: info.device,
+                    extra_outputs: info.extra_outputs,
                 }
             }
             ClientRequest::Ping { nonce } => ServerResponse::Pong { nonce },

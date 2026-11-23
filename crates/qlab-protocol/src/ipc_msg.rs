@@ -227,6 +227,13 @@ pub struct CueSummary {
     pub fade_in_secs: f32,
     #[serde(default)]
     pub fade_out_secs: f32,
+    /// Velocidad de reproducción de una cue de audio o vídeo (`1.0` = normal).
+    #[serde(default = "default_rate")]
+    pub rate: f32,
+}
+
+fn default_rate() -> f32 {
+    1.0
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -269,7 +276,17 @@ pub struct StatusSnapshot {
 pub enum ServerResponse {
     Ok,
     Error { message: String },
-    Hello { server_protocol: u32, shm_name: String, sample_rate: u32, channels: u16, backend: String },
+    Hello {
+        server_protocol: u32,
+        shm_name: String,
+        sample_rate: u32,
+        channels: u16,
+        backend: String,
+        #[serde(default)]
+        device: String,
+        #[serde(default)]
+        extra_outputs: Vec<Option<String>>,
+    },
     Pong { nonce: u64 },
     Status(StatusSnapshot),
     Cues { cues: Vec<CueSummary> },
@@ -354,7 +371,15 @@ mod tests {
         let all = vec![
             ServerResponse::Ok,
             ServerResponse::Error { message: "x".into() },
-            ServerResponse::Hello { server_protocol: 1, shm_name: "s".into(), sample_rate: 48_000, channels: 2, backend: "null".into() },
+            ServerResponse::Hello {
+                server_protocol: 1,
+                shm_name: "s".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                backend: "null".into(),
+                device: "XENYX 802S".into(),
+                extra_outputs: vec![Some("Realtek".into()), None],
+            },
             ServerResponse::Status(StatusSnapshot { playhead: Some(1), xruns: 2, ..Default::default() }),
             ServerResponse::Cues {
                 cues: vec![CueSummary {
@@ -380,6 +405,7 @@ mod tests {
                     file_path: "/música/x.wav".into(),
                     fade_in_secs: 0.5,
                     fade_out_secs: 2.0,
+                    rate: 1.0,
                 }],
             },
             ServerResponse::ShowLoaded { name: "n".into(), cues: 3, warnings: vec!["w".into()] },
@@ -396,7 +422,11 @@ mod tests {
         let json = r#"{"id":1,"result":"cues","cues":[{"id":3,"number":"3","name":"n","kind":"audio","state":"Idle","armed":true,"parent":null}]}"#;
         let m: ResponseMessage = serde_json::from_str(json).unwrap();
         let ServerResponse::Cues { cues } = m.response else { panic!() };
-        assert_eq!((cues[0].pre_wait, cues[0].continue_mode, cues[0].target.as_str()), (0.0, ContinueMode::DoNotContinue, ""));
+        assert_eq!((cues[0].pre_wait, cues[0].continue_mode, cues[0].target.as_str(), cues[0].rate), (0.0, ContinueMode::DoNotContinue, "", 1.0));
+        let hello_json = r#"{"id":2,"result":"hello","server_protocol":1,"shm_name":"s","sample_rate":48000,"channels":2,"backend":"null"}"#;
+        let h: ResponseMessage = serde_json::from_str(hello_json).unwrap();
+        let ServerResponse::Hello { device, extra_outputs, .. } = h.response else { panic!() };
+        assert!(device.is_empty() && extra_outputs.is_empty());
     }
 
     #[test]

@@ -77,6 +77,11 @@ impl Outputs {
     pub fn route_of(&self, m: &AudioLevelMatrixData) -> Option<OutputRoute> {
         m.route(self.main, self.extras.len())
     }
+
+    /// Total de canales públicos visibles para matrices de cues (principal + pares de salidas adicionales, sin PFL interno).
+    pub fn public_channels(&self) -> usize {
+        self.main + 2 * self.extras.len()
+    }
 }
 
 use crate::link::HelloInfo;
@@ -151,6 +156,8 @@ pub struct ViewCtx<'a> {
     pub master_db: f32,
     /// Maestro en mono.
     pub master_mono: bool,
+    /// Bloqueo de función activo (desactiva doble clic para disparar, etc.).
+    pub locked: bool,
     /// Se debe desplazar la tabla hasta la cue seleccionada.
     pub scroll_to_selected: bool,
 }

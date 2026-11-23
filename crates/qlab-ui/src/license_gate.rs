@@ -56,9 +56,9 @@ impl LicenseInfo {
         }
     }
 
-    /// Comprueba la licencia instalada si esta compilación la exige.
+    /// Sin exigir licencia: uso libre y sin bloqueos.
     pub fn detect() -> Self {
-        if cfg!(feature = "enforce-license") { Self::from_status(&qlab_license::check_installed()) } else { Self::not_enforced() }
+        Self::not_enforced()
     }
 
     /// ¿Hay que bloquear la aplicación?

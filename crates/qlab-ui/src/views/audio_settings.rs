@@ -20,6 +20,8 @@ pub const USE_CONSOLE: &str = "Usar la Xenyx 802S";
 pub struct AudioSettingsUi {
     pub open: bool,
     pub draft: AudioSettings,
+    /// Placa principal actualmente abierta por el motor (para excluirla de «Otras salidas» incluso si `draft.device == None`).
+    pub main_device: Option<String>,
     /// `(host, dispositivo)` de las salidas disponibles; `None` mientras se enumeran.
     pub devices: Option<Vec<(String, String)>>,
     scan: Option<Receiver<Vec<(String, String)>>>,
@@ -164,11 +166,12 @@ pub fn show(ctx: &egui::Context, st: &mut AudioSettingsUi, engine_note: &str) ->
                             ui.label(RichText::new("Buscando dispositivos…").color(theme::TEXT_DIM));
                         }
                         Some(list) => {
+                            let active_main = st.draft.device.as_deref().or(st.main_device.as_deref());
                             let mut seen: Vec<&str> = Vec::new();
                             let others: Vec<&str> = list
                                 .iter()
                                 .map(|(_, n)| n.as_str())
-                                .filter(|n| !n.is_empty() && st.draft.device.as_deref().is_none_or(|main| !main.eq_ignore_ascii_case(n)))
+                                .filter(|n| !n.is_empty() && active_main.is_none_or(|main| !main.eq_ignore_ascii_case(n)))
                                 .filter(|n| {
                                     let new = !seen.contains(n);
                                     seen.push(n);
@@ -194,7 +197,7 @@ pub fn show(ctx: &egui::Context, st: &mut AudioSettingsUi, engine_note: &str) ->
             });
             ui.end_row();
             // Salidas adicionales: otras placas a las que cada cue y cada pad pueden mandar sonido («Sale por»).
-            let main = st.draft.device.clone();
+            let main = st.draft.device.clone().or_else(|| st.main_device.clone());
             st.draft.extra_outputs.resize(qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS, String::new());
             for k in 0..qlab_daemon::backend_audio::MAX_EXTRA_OUTPUTS {
                 ui.label(format!("Salida {}", k + 2));

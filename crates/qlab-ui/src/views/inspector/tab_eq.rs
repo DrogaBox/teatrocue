@@ -14,7 +14,7 @@ use crate::theme;
 /// Frecuencia de muestreo con la que se calcula la curva dibujada (la forma apenas cambia con otra).
 const CURVE_SR: f32 = 48_000.0;
 /// Alto del gráfico: lo justo para que las 4 bandas de la tabla queden enteras en el Inspector de una pantalla chica.
-const CANVAS_HEIGHT: f32 = 125.0;
+const CANVAS_HEIGHT: f32 = 96.0;
 const MARGIN_LEFT: f32 = 38.0;
 const MARGIN_BOTTOM: f32 = 18.0;
 const POINT_HIT: f32 = 20.0;
@@ -85,13 +85,13 @@ pub fn show(ui: &mut Ui, d: &mut Draft, playing: bool) {
         ui.label(RichText::new(text).strong().color(color));
         ui.label(RichText::new("Arrastre los puntos: horizontal = frecuencia, vertical = ganancia. Rueda sobre un punto = Q. Doble clic = activar/desactivar la banda.").small().color(theme::TEXT_DIM));
     });
-    ui.add_space(4.0);
+    ui.add_space(2.0);
 
     let sel_id = ui.scope_id().with("eq_selected");
     let mut selected: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
     canvas(ui, eq, &mut selected);
     ui.data_mut(|d| d.insert_temp(sel_id, selected));
-    ui.add_space(6.0);
+    ui.add_space(3.0);
     table(ui, eq, &mut selected);
     ui.data_mut(|d| d.insert_temp(sel_id, selected));
     *eq = eq.clamped();
@@ -171,7 +171,7 @@ fn canvas(ui: &mut Ui, eq: &mut AudioEqData, selected: &mut usize) {
 }
 
 fn table(ui: &mut Ui, eq: &mut AudioEqData, selected: &mut usize) {
-    egui::Grid::new("eq_table").num_columns(6).spacing([14.0, 5.0]).striped(true).show(ui, |ui| {
+    egui::Grid::new("eq_table").num_columns(6).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
         for h in ["Banda", "Activa", "Tipo", "Frecuencia", "Ganancia", "Q"] {
             ui.label(RichText::new(h).small().color(theme::TEXT_DIM));
         }

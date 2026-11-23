@@ -61,6 +61,8 @@ pub struct VoiceLoader {
     pool: VoicePool,
     disk: DiskStreamerPool,
     device_channels: usize,
+    /// Canales visibles para las cues (principal + salidas adicionales, sin el bus interno de auriculares PFL).
+    cue_channels: usize,
     loaded: HashMap<CueId, LoadedInfo>,
     /// Primer canal de la mezcla de cada salida adicional sin placa: lo que la cue mande ahí sale por la principal.
     down_outputs: Vec<usize>,
@@ -68,13 +70,21 @@ pub struct VoiceLoader {
 
 impl VoiceLoader {
     pub fn new(disk_threads: usize, device_channels: usize) -> Self {
+        let ch = device_channels.clamp(1, MAX_OUTPUT_CHANNELS);
         Self {
             pool: VoicePool::new(64),
             disk: DiskStreamerPool::new(disk_threads),
-            device_channels: device_channels.clamp(1, MAX_OUTPUT_CHANNELS),
+            device_channels: ch,
+            cue_channels: ch,
             loaded: HashMap::new(),
             down_outputs: Vec::new(),
         }
+    }
+
+    /// Limita los canales visibles de las cues (principal + salidas adicionales) sin recortar la mezcla interna de PFL.
+    pub fn with_cue_channels(mut self, cue_channels: usize) -> Self {
+        self.cue_channels = cue_channels.clamp(1, self.device_channels);
+        self
     }
 
     /// ¿La matriz manda algo a una salida adicional sin placa? Entonces la voz se recarga para que eso salga por la
@@ -98,6 +108,11 @@ impl VoiceLoader {
 
     pub fn device_channels(&self) -> usize {
         self.device_channels
+    }
+
+    /// Canales de salida visibles para matrices de cues y pads (sin el bus interno de PFL en otra placa).
+    pub fn cue_channels(&self) -> usize {
+        self.cue_channels
     }
 
     pub fn loaded_count(&self) -> usize {
@@ -151,7 +166,8 @@ impl VoiceLoader {
             path,
             &StreamConfig { start_frame: start, extra_pinned_starts: extra_pinned, ..Default::default() },
         )?;
-        let matrix = build_matrix(info.channels, self.device_channels, levels, &self.down_outputs);
+        let max_copy_outs = if id.0 >= crate::adhoc::ADHOC_BASE { self.device_channels } else { self.cue_channels };
+        let matrix = build_matrix(info.channels, self.device_channels, max_copy_outs, levels, &self.down_outputs);
         let rt = VoiceRtState::new(start, &segments, matrix).map_err(LoadError::Voice)?;
         let voice = Voice::with_reader(
             VoiceInit {
@@ -217,15 +233,16 @@ fn compile_segments(t: &AudioTimeAndLoopsData, start: u64, end: u64) -> Result<V
 
 /// Matriz en vivo `M × N`: la de fábrica de una cue (uno-a-uno; un archivo mono, al centro de las dos primeras salidas),
 /// con las celdas de `levels` encima si las hay.
-fn build_matrix(file_channels: usize, device_channels: usize, levels: Option<&AudioLevelMatrixData>, down_outputs: &[usize]) -> AudioLevelMatrixRt {
+fn build_matrix(file_channels: usize, device_channels: usize, max_copy_outs: usize, levels: Option<&AudioLevelMatrixData>, down_outputs: &[usize]) -> AudioLevelMatrixRt {
     let m = file_channels.clamp(1, MAX_INPUT_CHANNELS);
     let mut matrix = AudioLevelMatrixRt::new(m, device_channels);
-    let default = levels.is_none().then(|| AudioLevelMatrixData::new_one_to_one(m, matrix.out_channels).ok()).flatten();
+    let copy_outs = max_copy_outs.min(matrix.out_channels);
+    let default = levels.is_none().then(|| AudioLevelMatrixData::new_one_to_one(m, copy_outs).ok()).flatten();
     if let Some(l) = levels.or(default.as_ref()) {
         if l.validate().is_ok() {
             let cols = l.outputs as usize + 1;
             for row in 0..=(l.inputs as usize).min(m) {
-                for col in 0..=(l.outputs as usize).min(matrix.out_channels) {
+                for col in 0..=(l.outputs as usize).min(copy_outs) {
                     matrix.base_db[row][col] = l.cells[row * cols + col].db;
                 }
             }
@@ -436,5 +453,27 @@ mod tests {
         assert!(l.load_audio(CueId(4), &basics, &data).is_ok());
         l.unload_all();
         assert_eq!(l.loaded_count(), 0);
+    }
+
+    #[test]
+    fn separate_pfl_channels_are_hidden_from_cues_but_reachable_by_adhoc_pfl() {
+        let wav = write_wav("pfl_iso", 2, 4_800, 48_000, |_, _| 0.1);
+        let _c = Cleanup(vec![wav.clone()]);
+        // 2 canales de sala + 2 canales internos de auriculares PFL = 4 de mezcla, pero solo 2 visibles para cues.
+        let mut l = VoiceLoader::new(1, 4).with_cue_channels(2);
+        assert_eq!((l.device_channels(), l.cue_channels()), (4, 2));
+        // Una cue que intentara mandar audio a los canales 3-4 (PFL) no debe filtrarse a ellos.
+        let mut stray = AudioLevelMatrixData::new_one_to_one(2, 4).unwrap();
+        stray.set_db(1, 3, 0.0).unwrap();
+        stray.set_db(2, 4, 0.0).unwrap();
+        l.load_path(CueId(1), &wav, &time(0.0, 0.0), Some(&stray)).unwrap();
+        let cue_lin = unsafe { l.voice(CueId(1)).unwrap().rt_mut() }.matrix.target_crosspoint_lin;
+        assert_eq!((cue_lin[0][2], cue_lin[1][3]), (0.0, 0.0), "una cue normal nunca escribe en el bus interno de PFL");
+        // En cambio, la voz adhoc de audición (PFL) sí puede escribir en los canales 3-4.
+        let pfl_levels = crate::adhoc::levels(2, l.device_channels(), 2, 0.0);
+        let pfl_id = CueId(crate::adhoc::voice_id(crate::adhoc::AUDITION_SLOT));
+        l.load_path(pfl_id, &wav, &time(0.0, 0.0), Some(&pfl_levels)).unwrap();
+        let pfl_lin = unsafe { l.voice(pfl_id).unwrap().rt_mut() }.matrix.target_crosspoint_lin;
+        assert_eq!((pfl_lin[0][0], pfl_lin[1][1], pfl_lin[0][2], pfl_lin[1][3]), (0.0, 0.0, 1.0, 1.0), "PFL suena por el bus 3-4");
     }
 }

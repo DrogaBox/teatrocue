@@ -128,9 +128,10 @@ impl Projection {
     }
 
     /// Dibuja la ventana (si está abierta) y aplica lo que pida el usuario en ella.
-    pub fn show(&mut self, ctx: &egui::Context, content: &Content) {
+    /// Devuelve `true` si el operador pulsó `Esc` estando en modo ventana (para propagar PANIC y nunca dejar audio atrapado).
+    pub fn show(&mut self, ctx: &egui::Context, content: &Content) -> bool {
         if !self.open {
-            return;
+            return false;
         }
         let id = Self::id();
         let (size, pos) = *self.geometry.get_or_insert_with(|| {
@@ -227,12 +228,18 @@ impl Projection {
         if ev.toggle_fs {
             self.toggle_fullscreen();
         }
-        // `Esc` y el botón «Cerrar» cierran; la X del sistema también.
+        // `Esc` en pantalla completa sale limpiamente al modo ventana; en modo ventana cierra y dispara PANIC para
+        // nunca dejar audio sonando sin escapatoria si esta ventana tenía el foco.
+        let mut panic_requested = false;
         if ev.esc {
+            if !self.fullscreen {
+                panic_requested = true;
+            }
             self.on_escape();
         } else if ev.close {
             self.open = false;
         }
+        panic_requested
     }
 }
 
@@ -308,12 +315,12 @@ mod tests {
         for fullscreen in [false, true] {
             p.fullscreen = fullscreen;
             for _ in 0..3 {
-                ctx.run_pass(egui::RawInput::default(), |ctx| p.show(ctx, &blank)).textures_delta.clear();
+                ctx.run_pass(egui::RawInput::default(), |ctx| { p.show(ctx, &blank); }).textures_delta.clear();
             }
         }
         let tex = ctx.load_texture("t", egui::ColorImage::filled([4, 2], Color32::RED), Default::default());
         let with = Content { texture: Some(tex), fit: VideoFit::Fill };
-        ctx.run_pass(egui::RawInput::default(), |ctx| p.show(ctx, &with)).textures_delta.clear();
+        ctx.run_pass(egui::RawInput::default(), |ctx| { p.show(ctx, &with); }).textures_delta.clear();
         assert!(p.open, "dibujar no la cierra");
     }
 

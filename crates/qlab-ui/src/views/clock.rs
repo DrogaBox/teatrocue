@@ -7,7 +7,7 @@
 use eframe::egui::{self, vec2, Color32, RichText, Ui};
 
 use super::ViewCtx;
-use crate::model::{CueUiPhase, Telemetry, UiModel};
+use crate::model::{CueUiPhase, CueUiState, Telemetry, UiModel};
 use crate::theme;
 
 pub const WARN_SECS: f64 = 10.0;
@@ -17,6 +17,7 @@ pub const CRITICAL_SECS: f64 = 5.0;
 pub struct Countdown {
     pub cue_id: u64,
     pub remaining: f64,
+    pub paused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,17 +37,20 @@ pub fn alert_of(remaining: f64) -> Alert {
     }
 }
 
-/// La cue de la que mostrar el tiempo restante, si hay alguna sonando con duración conocida.
+/// La cue de la que mostrar el tiempo restante, si hay alguna sonando (o en pausa) con duración conocida.
+/// Las cues en marcha tienen prioridad sobre las pausadas.
 pub fn countdown(model: &UiModel, telemetry: &Telemetry) -> Option<Countdown> {
     telemetry
         .running
         .iter()
         .filter(|(_, i)| i.phase == Some(CueUiPhase::Action))
         .filter_map(|(&id, i)| {
-            let d = model.summary(id)?.duration.filter(|d| d.is_finite() && *d > 0.0)?;
-            Some(Countdown { cue_id: id, remaining: (d - f64::from(i.action_elapsed)).max(0.0) })
+            let s = model.summary(id)?;
+            let d = s.duration.filter(|d| d.is_finite() && *d > 0.0)?;
+            let paused = CueUiState::parse(&s.state) == CueUiState::Paused;
+            Some(Countdown { cue_id: id, remaining: (d - f64::from(i.action_elapsed)).max(0.0), paused })
         })
-        .max_by(|a, b| a.remaining.total_cmp(&b.remaining).then(b.cue_id.cmp(&a.cue_id)))
+        .max_by(|a, b| (!a.paused).cmp(&(!b.paused)).then_with(|| a.remaining.total_cmp(&b.remaining)).then(b.cue_id.cmp(&a.cue_id)))
 }
 
 /// `-01:24.3` (décimas, truncadas para que el cero llegue exacto al final).
@@ -69,25 +73,37 @@ pub fn blink(alert: Alert, t: f64) -> f32 {
 
 pub fn show(ui: &mut Ui, v: &ViewCtx, width: f32, font: f32) {
     let cd = countdown(v.model, v.telemetry);
-    let alert = cd.map_or(Alert::Normal, |c| alert_of(c.remaining));
+    let paused = cd.is_some_and(|c| c.paused);
+    let alert = match cd {
+        Some(c) if !c.paused => alert_of(c.remaining),
+        _ => Alert::Normal,
+    };
     let t = ui.ctx().input(|i| i.time);
     let k = blink(alert, t);
-    let base = match (cd, alert) {
-        (None, _) => theme::TEXT_DIM,
-        (Some(_), Alert::Normal) => theme::GREEN,
-        (Some(_), Alert::Warn) => theme::AMBER,
-        (Some(_), Alert::Critical) => theme::RED,
+    let base = match (cd, paused, alert) {
+        (None, _, _) => theme::TEXT_DIM,
+        (Some(_), true, _) => theme::AMBER,
+        (Some(_), false, Alert::Normal) => theme::GREEN,
+        (Some(_), false, Alert::Warn) => theme::AMBER,
+        (Some(_), false, Alert::Critical) => theme::RED,
     };
     let color = Color32::from_rgb((f32::from(base.r()) * k) as u8, (f32::from(base.g()) * k) as u8, (f32::from(base.b()) * k) as u8);
-    let stroke = if alert == Alert::Normal { theme::GRID } else { color };
+    let stroke = if paused { theme::AMBER } else if alert == Alert::Normal { theme::GRID } else { color };
     let text = cd.map_or("--:--.-".to_string(), |c| fmt_countdown(c.remaining));
     egui::Frame::new().fill(theme::BG).stroke(egui::Stroke::new(if alert == Alert::Critical { 2.5 } else { 1.0 }, stroke)).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
         ui.set_min_size(vec2(width, 60.0));
         ui.set_max_width(width);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            let who = cd.and_then(|c| v.model.summary(c.cue_id)).map_or_else(|| "RESTANTE".to_string(), |c| format!("RESTANTE · {}", crate::format::ellipsize(&c.number, 8)));
-            ui.label(RichText::new(who).small().color(theme::TEXT_DIM));
+            let who = match cd {
+                Some(c) if c.paused => match v.model.summary(c.cue_id) {
+                    Some(s) => format!("PAUSA · {}", crate::format::ellipsize(&s.number, 8)),
+                    None => "PAUSA".to_string(),
+                },
+                Some(c) => v.model.summary(c.cue_id).map_or_else(|| "RESTANTE".to_string(), |s| format!("RESTANTE · {}", crate::format::ellipsize(&s.number, 8))),
+                None => "RESTANTE".to_string(),
+            };
+            ui.label(RichText::new(who).small().color(if paused { theme::AMBER } else { theme::TEXT_DIM }));
             ui.add(egui::Label::new(RichText::new(text).monospace().size(font).strong().color(color)).extend());
             // Hora real de la cabina y la cue que sigue, para cantar el GO sin mirar la lista.
             let next = v.model.playhead.and_then(|id| v.model.summary(id)).map_or_else(|| "fin de la lista".to_string(), |c| format!("{} {}", c.number, crate::format::ellipsize(&c.name, 22)));
@@ -131,6 +147,7 @@ mod tests {
             file_path: String::new(),
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            rate: 1.0,
         }
     }
 
@@ -186,5 +203,9 @@ mod tests {
         assert!((c.remaining - 84.3).abs() < 1e-3, "{c:?}");
         tel.running.remove(&1);
         assert_eq!(countdown(&model, &tel).unwrap().cue_id, 2);
+        // Una cue pausada muestra su tiempo congelado cuando no hay nada sonando.
+        model.set_state(2, "Paused");
+        let paused = countdown(&model, &tel).unwrap();
+        assert_eq!((paused.cue_id, paused.paused), (2, true));
     }
 }

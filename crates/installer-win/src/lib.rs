@@ -467,6 +467,50 @@ pub fn install(opts: &Options, console: &mut dyn Console) -> Result<Report, Stri
     Ok(Report { license, copied, shortcut, warnings, renewed, license_only, registry })
 }
 
+/// Resultado de una instalación libre (sin licencia ni llave maestra).
+#[derive(Debug)]
+pub struct FreeReport {
+    pub copied: Vec<String>,
+    pub shortcut: Option<PathBuf>,
+    pub warnings: Vec<String>,
+}
+
+/// Instala o actualiza TeatroCue sin exigir llave maestra ni emitir licencia.
+pub fn install_free(media_root: &Path, target: &Path, create_shortcut: bool, console: &mut dyn Console) -> Result<FreeReport, String> {
+    let files = check_package(media_root)?;
+    let busy = files_in_use(target, &files);
+    if !busy.is_empty() {
+        return Err(format!("TeatroCue está abierto ({}). Ciérrelo (la interfaz y, si lo lanzó aparte, teatrocue-daemon) y vuelva a ejecutar el instalador. No se cambió nada.", busy.join(", ")));
+    }
+
+    console.say(&format!("Instalando en {} …", target.display()));
+    let payload = media_root.join(PAYLOAD_DIR);
+    let mut copied = Vec::new();
+    for rel in &files {
+        let bytes = copy_atomic(&payload.join(rel), &target.join(rel))?;
+        let name = rel.to_string_lossy().replace('\\', "/");
+        console.say(&format!("  {name} ({:.1} MB)", bytes as f64 / 1_048_576.0));
+        copied.push(name);
+    }
+
+    let mut warnings = Vec::new();
+    let shortcut = if create_shortcut {
+        match create_desktop_shortcut(target) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                warnings.push(format!("no se pudo crear el acceso directo del Escritorio: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if !files.iter().any(|f| f.as_os_str().eq_ignore_ascii_case("ffprobe.exe")) {
+        warnings.push("el paquete no trae ffprobe.exe: la vista previa de vídeo no estará disponible".into());
+    }
+    Ok(FreeReport { copied, shortcut, warnings })
+}
+
 /// Crea `TeatroCue.lnk` en el Escritorio del usuario apuntando a `teatrocue-ui.exe`. Usa PowerShell (incluido en
 /// Windows, sin dependencias). Devuelve la ruta del acceso directo.
 pub fn create_desktop_shortcut(target_dir: &Path) -> Result<PathBuf, String> {

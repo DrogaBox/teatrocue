@@ -21,19 +21,21 @@ pub struct Metrics {
     pub clock_font: f32,
     pub slider_w: f32,
     pub meter_w: f32,
+    pub panic_w: f32,
+    pub panic_gap: f32,
 }
 
-/// Ancho que hace falta para el estado del motor (LED + nombre del dispositivo, XR y CPU) y los márgenes entre bloques.
+/// Ancho que hace falta para el estado del motor (LED + nombre del dispositivo, Cortes y CPU) y los márgenes entre bloques.
 const STATUS_AND_GAPS_W: f32 = 210.0;
 
 impl Metrics {
     pub fn for_width(avail: f32) -> Self {
         if avail >= 1420.0 {
-            Self { standby_w: 260.0, clock_w: 188.0, clock_font: 34.0, slider_w: MASTER_SLIDER_WIDTH, meter_w: 96.0 }
+            Self { standby_w: 250.0, clock_w: 184.0, clock_font: 34.0, slider_w: MASTER_SLIDER_WIDTH, meter_w: 90.0, panic_w: 108.0, panic_gap: 16.0 }
         } else if avail >= 1180.0 {
-            Self { standby_w: 210.0, clock_w: 160.0, clock_font: 30.0, slider_w: 120.0, meter_w: 64.0 }
+            Self { standby_w: 195.0, clock_w: 156.0, clock_font: 28.0, slider_w: 112.0, meter_w: 58.0, panic_w: 98.0, panic_gap: 12.0 }
         } else {
-            Self { standby_w: 150.0, clock_w: 128.0, clock_font: 24.0, slider_w: 70.0, meter_w: 36.0 }
+            Self { standby_w: 136.0, clock_w: 124.0, clock_font: 22.0, slider_w: 64.0, meter_w: 32.0, panic_w: 88.0, panic_gap: 8.0 }
         }
     }
 
@@ -68,12 +70,12 @@ pub fn show(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>) {
 fn control_block(ui: &mut Ui, v: &ViewCtx, actions: &mut Vec<Action>, m: &Metrics) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
-        transport_row(ui, actions);
+        transport_row(ui, actions, m);
         master_row(ui, v, actions, m);
     });
 }
 
-fn transport_row(ui: &mut Ui, actions: &mut Vec<Action>) {
+fn transport_row(ui: &mut Ui, actions: &mut Vec<Action>, m: &Metrics) {
     ui.horizontal(|ui| {
         if ui.button("Pausar todo").clicked() {
             actions.push(Action::PauseAll);
@@ -84,7 +86,9 @@ fn transport_row(ui: &mut Ui, actions: &mut Vec<Action>) {
         if ui.button("Parar todo").clicked() {
             actions.push(Action::StopAll);
         }
-        let panic = egui::Button::new(RichText::new("PANIC").strong().color(Color32::WHITE)).fill(theme::RED).min_size(vec2(84.0, 0.0));
+        // Separación física para evitar disparar PANIC por accidente al buscar «Parar todo».
+        ui.add_space(m.panic_gap);
+        let panic = egui::Button::new(RichText::new("PANIC").size(15.0).strong().color(Color32::WHITE)).fill(theme::RED).min_size(vec2(m.panic_w, 26.0));
         if ui.add(panic).on_hover_text("Parada suave. Pulsa dos veces seguidas (o Esc, Esc) para una parada dura").clicked() {
             actions.push(Action::Panic);
         }
@@ -200,12 +204,17 @@ fn system_status(ui: &mut Ui, v: &ViewCtx) {
         let t = v.telemetry;
         ui.horizontal(|ui| {
             widgets::led(ui, theme::GREEN, true, "conectado al daemon");
-            let backend = v.hello.map_or("—", |h| h.backend.as_str());
-            ui.label(RichText::new(crate::format::ellipsize(backend, 18)).small().color(theme::TEXT_DIM));
+            let (label, tip) = match v.hello {
+                Some(h) if !h.device.is_empty() => (h.device.as_str(), format!("{} ({} · {} Hz · {} ch)", h.device, h.backend, h.sample_rate, h.channels)),
+                Some(h) => (h.backend.as_str(), format!("{} · {} Hz · {} ch", h.backend, h.sample_rate, h.channels)),
+                None => ("—", "Sin conexión".to_string()),
+            };
+            ui.label(RichText::new(crate::format::ellipsize(label, 18)).small().color(theme::TEXT_DIM)).on_hover_text(tip);
         });
         ui.horizontal(|ui| {
             let xr = t.xruns();
-            ui.label(RichText::new(format!("XR {xr}")).monospace().small().color(if xr > 0 { theme::RED } else { theme::TEXT_DIM }));
+            ui.label(RichText::new(format!("Cortes: {xr}")).monospace().small().color(if xr > 0 { theme::RED } else { theme::TEXT_DIM }))
+                .on_hover_text("Cortes o microsaltos del buffer de audio (xruns). Debe ser 0 en función.");
             let cpu = t.cpu_permille() as f32 / 10.0;
             ui.label(RichText::new(format!("CPU {cpu:>4.1}%")).monospace().small().color(if cpu > 70.0 { theme::AMBER } else { theme::TEXT_DIM }));
             widgets::led(ui, theme::RED, t.frozen(), "audio congelado");

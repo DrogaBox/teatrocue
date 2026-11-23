@@ -24,6 +24,7 @@ pub const RED_DARK: Color32 = Color32::from_rgb(0x6a, 0x16, 0x16);
 pub const PLAYHEAD_BG: Color32 = Color32::from_rgb(0x3a, 0x2a, 0x08);
 pub const SELECTED_BG: Color32 = Color32::from_rgb(0x1e, 0x2c, 0x4a);
 pub const RUNNING_BG: Color32 = Color32::from_rgb(0x0e, 0x2e, 0x1a);
+pub const PAUSED_BG: Color32 = Color32::from_rgb(0x33, 0x22, 0x14);
 pub const WAITING_BG: Color32 = Color32::from_rgb(0x0c, 0x2a, 0x30);
 
 /// Colores de las cues etiquetadas (columna de color de QLab).
@@ -47,7 +48,7 @@ pub fn text_color(state: CueUiState, is_playhead: bool, armed: bool) -> Color32 
     match state {
         CueUiState::Running => GREEN,
         CueUiState::PreWaiting | CueUiState::PostWaiting => CYAN,
-        CueUiState::Paused => AMBER_DIM,
+        CueUiState::Paused => AMBER,
         CueUiState::Completed => TEXT_DIM,
         CueUiState::Idle | CueUiState::Armed => {
             if is_playhead {
@@ -62,6 +63,7 @@ pub fn text_color(state: CueUiState, is_playhead: bool, armed: bool) -> Color32 
 pub fn row_background(state: CueUiState, is_playhead: bool, is_selected: bool) -> Option<Color32> {
     match (state, is_playhead, is_selected) {
         (CueUiState::Running, _, _) => Some(RUNNING_BG),
+        (CueUiState::Paused, _, _) => Some(PAUSED_BG),
         (CueUiState::PreWaiting | CueUiState::PostWaiting, _, _) => Some(WAITING_BG),
         (_, true, _) => Some(PLAYHEAD_BG),
         (_, _, true) => Some(SELECTED_BG),
@@ -114,6 +116,7 @@ mod tests {
     #[test]
     fn backgrounds_prioritise_activity_over_playhead_over_selection() {
         assert_eq!(row_background(CueUiState::Running, true, true), Some(RUNNING_BG));
+        assert_eq!(row_background(CueUiState::Paused, false, false), Some(PAUSED_BG));
         assert_eq!(row_background(CueUiState::Idle, true, true), Some(PLAYHEAD_BG));
         assert_eq!(row_background(CueUiState::Idle, false, true), Some(SELECTED_BG));
         assert_eq!(row_background(CueUiState::Idle, false, false), None);
@@ -134,7 +137,7 @@ mod tests {
             la.max(lb) / la.min(lb)
         };
         for fg in [TEXT, AMBER, GREEN, CYAN] {
-            for bg in [BG, PLAYHEAD_BG, RUNNING_BG, WAITING_BG, SELECTED_BG] {
+            for bg in [BG, PLAYHEAD_BG, RUNNING_BG, PAUSED_BG, WAITING_BG, SELECTED_BG] {
                 assert!(ratio(fg, bg) >= 7.0, "{fg:?} sobre {bg:?}: {:.1}", ratio(fg, bg));
             }
         }

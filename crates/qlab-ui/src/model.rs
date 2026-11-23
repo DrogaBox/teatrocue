@@ -456,6 +456,7 @@ pub(crate) mod tests {
             file_path: String::new(),
             fade_in_secs: 0.0,
             fade_out_secs: 0.0,
+            rate: 1.0,
         }
     }
 

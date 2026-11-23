@@ -107,7 +107,7 @@ impl Daemon {
         log(format!("memoria compartida `{}`", shm.name()));
 
         let channels = cfg.backend.mix_channels();
-        let loader = Arc::new(Mutex::new(VoiceLoader::new(cfg.disk_threads, channels)));
+        let loader = Arc::new(Mutex::new(VoiceLoader::new(cfg.disk_threads, channels).with_cue_channels(cfg.backend.cue_channels())));
         let (cmd_tx, cmd_rx) = HeapRb::new(COMMAND_RING_CAPACITY).split();
         let (status_tx, status_rx) = HeapRb::new(STATUS_RING_CAPACITY).split();
 
@@ -157,7 +157,14 @@ impl Daemon {
             Arc::clone(&health),
             Arc::clone(&loader),
             timebase,
-            ServerInfo { shm_name: shm.name().to_string(), sample_rate: info.sample_rate, channels: info.channels, backend: info.backend.clone() },
+            ServerInfo {
+                shm_name: shm.name().to_string(),
+                sample_rate: info.sample_rate,
+                channels: info.channels,
+                backend: info.backend.clone(),
+                device: info.device.clone(),
+                extra_outputs: info.extra_outputs.clone(),
+            },
             cfg.ring_producer,
             Arc::clone(&shutdown),
         ).with_license(cfg.license.clone()));
@@ -278,7 +285,25 @@ impl Daemon {
         let callbacks = self.health.audio_callbacks.load(Ordering::Acquire);
         let change = self.recovery.restarted(result.is_ok(), self.epoch.now_ns(), callbacks);
         match &result {
-            Ok(()) => log(format!("stream de audio reiniciado en {}", self.backend.info().device)),
+            Ok(()) => {
+                let info = self.backend.info().clone();
+                let down: Vec<usize> = info
+                    .extra_outputs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(k, opened)| opened.is_none().then(|| self.cfg.backend.extra_output_first(k)))
+                    .collect();
+                self.loader.lock().expect("envenenado").set_down_outputs(down);
+                self.ipc_ctx.update_info(ServerInfo {
+                    shm_name: self.shm.name().to_string(),
+                    sample_rate: info.sample_rate,
+                    channels: info.channels,
+                    backend: info.backend.clone(),
+                    device: info.device.clone(),
+                    extra_outputs: info.extra_outputs.clone(),
+                });
+                log(format!("stream de audio reiniciado en {}", info.device));
+            }
             // Con la salida caída cada reintento fallido iría al registro: basta con el primero.
             Err(e) if !was_down => log(format!("no se pudo reiniciar el stream de audio: {e}")),
             Err(_) => {}

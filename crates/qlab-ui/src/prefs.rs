@@ -18,6 +18,8 @@ pub enum Command {
     Down,
     Lock,
     Carts,
+    /// Mostrar u ocultar el panel inferior del Inspector.
+    ToggleInspector,
     Delete,
     Duplicate,
     Undo,
@@ -35,7 +37,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 21] = [
+    pub const ALL: [Command; 22] = [
         Command::Go,
         Command::Panic,
         Command::Pause,
@@ -44,6 +46,7 @@ impl Command {
         Command::Down,
         Command::Lock,
         Command::Carts,
+        Command::ToggleInspector,
         Command::Delete,
         Command::Duplicate,
         Command::Undo,
@@ -69,6 +72,7 @@ impl Command {
             Command::Down => "Selección abajo",
             Command::Lock => "Bloqueo de función",
             Command::Carts => "Ventana de Carts",
+            Command::ToggleInspector => "Mostrar / ocultar Inspector",
             Command::Delete => "Borrar la cue seleccionada",
             Command::Duplicate => "Duplicar cue",
             Command::Undo => "Deshacer",
@@ -99,6 +103,7 @@ impl Command {
             Command::Down => [k(Key::ArrowDown), None],
             Command::Lock => [c(Key::L), None],
             Command::Carts => [k(Key::F3), None],
+            Command::ToggleInspector => [c(Key::I), None],
             Command::Delete => [k(Key::Delete), k(Key::Backspace)],
             Command::Duplicate => [c(Key::D), None],
             Command::Undo => [c(Key::Z), None],

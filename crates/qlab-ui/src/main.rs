@@ -86,9 +86,6 @@ fn main() -> eframe::Result {
             }
             cfg.autosave_secs = Some(60);
             cfg.license = teatrocue_license();
-            if cfg!(feature = "enforce-license") {
-                cfg.license_setup = Some(qlab_license::activation::Setup::installed());
-            }
             cfg
         }
         Ok(None) => {
@@ -118,7 +115,7 @@ fn main() -> eframe::Result {
         None
     };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("TeatroCue").with_inner_size([1280.0, 800.0]).with_min_inner_size([900.0, 560.0]),
+        viewport: egui::ViewportBuilder::default().with_title("TeatroCue").with_inner_size([1240.0, 720.0]).with_min_inner_size([900.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native("TeatroCue", options, Box::new(move |cc| Ok(Box::new(QlabApp::new(&cc.egui_ctx, cfg)))))

@@ -294,7 +294,7 @@ fn the_inspector_keeps_its_height_when_the_selection_changes() {
         f.h.step();
     }
     let base = app(&f.h).inspector_height;
-    assert!(base >= 340.0, "altura inicial {base}");
+    assert!(base >= crate::app::INSPECTOR_MIN_HEIGHT, "altura inicial {base}");
     let mut seen = vec![base];
     // GO avanza la selección (y el Inspector recarga su borrador); luego saltos manuales entre filas.
     f.h.get_by_label("GO").click();
@@ -896,8 +896,10 @@ fn f1_opens_the_manual_with_three_tabs_and_the_legal_authorization() {
     assert!(f.h.query_by_label("AUTORIZACIÓN DE USO EXCLUSIVO:").is_some());
     assert!(f.h.query_by_label(crate::views::help_modal::AUTHORIZATION_TEXT).is_some(), "el texto legal se muestra completo");
     assert!(f.h.query_by_label("Ballet Oficial de Córdoba").is_some(), "Licenciado a");
-    let id = app(&f.h).license.machine_id.clone();
-    if let Some(id) = id {
+    if matches!(app(&f.h).license.state, crate::license_gate::LicenseState::NotEnforced) {
+        assert!(f.h.query_by_label("Edición Libre · Ballet Oficial de Córdoba").is_some(), "Edición Libre visible");
+        assert!(f.h.query_by_label("Machine ID").is_none(), "sin jerga técnica en Edición Libre");
+    } else if let Some(id) = app(&f.h).license.machine_id.clone() {
         assert!(f.h.query_by_label(&id).is_some(), "Machine ID visible");
     }
     // Mientras el manual está abierto, Esc lo cierra y NO dispara un Panic.
@@ -2456,13 +2458,13 @@ fn the_top_bar_shrinks_to_fit_so_the_engine_status_is_never_clipped_at_1366_1280
             f.h.step();
         }
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h));
-        let labels = ["GO", "STANDBY", "RESTANTE", "Pausar todo", "Parar todo", "PANIC", "MASTER", "0.0 dB", "XR 0", "CPU"];
+        let labels = ["GO", "STANDBY", "RESTANTE", "Pausar todo", "Parar todo", "PANIC", "MASTER", "0.0 dB", "Cortes: 0", "CPU"];
         for l in labels {
             let r = rect_of(&f.h, l);
             assert!(screen.contains_rect(r), "a {w} px «{l}» se sale de la pantalla: {r:?}");
         }
         // El estado del motor queda entero a la derecha de los controles, sin pisarlos y en dos líneas compactas.
-        let (panic_btn, xr, cpu, master) = (rect_of(&f.h, "PANIC"), rect_of(&f.h, "XR 0"), rect_of(&f.h, "CPU"), rect_of(&f.h, "MASTER"));
+        let (panic_btn, xr, cpu, master) = (rect_of(&f.h, "PANIC"), rect_of(&f.h, "Cortes: 0"), rect_of(&f.h, "CPU"), rect_of(&f.h, "MASTER"));
         assert!(panic_btn.right() <= xr.left() + 0.5, "a {w} px el estado pisa el botón PANIC: {panic_btn:?} / {xr:?}");
         assert!(cpu.right() <= w - 2.0, "a {w} px «CPU» queda cortado: {cpu:?}");
         assert!(xr.height() < 24.0 && cpu.height() < 24.0, "texto de estado partido en varias líneas");
@@ -3463,4 +3465,84 @@ fn outputs_name_the_extra_cards_and_their_matrix_columns() {
     assert_eq!(o.label(OutputRoute { output: 1, side: RouteSide::Second }), "Salida 2 (Realtek) · solo ficha 2");
     assert_eq!(o.label(OutputRoute { output: 2, side: RouteSide::Both }), "Salida 3 (sin placa: sale por la principal) · las dos fichas");
     assert_eq!((o.column(2).as_str(), o.column(3).as_str(), o.column(6).as_str(), o.column(7).as_str()), ("Out 2", "S2 · 1", "S3 · 2", "Out 7"));
+}
+
+#[test]
+fn inspector_collapses_and_expands_with_button_and_ctrl_i() {
+    let mut f = fixture("insp_collapse");
+    assert!(app(&f.h).inspector_open && app(&f.h).inspector_height >= crate::app::INSPECTOR_MIN_HEIGHT);
+    f.h.get_by_label("Ocultar").click();
+    for _ in 0..4 {
+        f.h.step();
+    }
+    assert!(!app(&f.h).inspector_open && app(&f.h).inspector_height == 0.0);
+    assert!(f.h.query_by_label("Mostrar Inspector (Ctrl+I)").is_some());
+    f.h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::I);
+    for _ in 0..4 {
+        f.h.step();
+    }
+    assert!(app(&f.h).inspector_open && app(&f.h).inspector_height >= crate::app::INSPECTOR_MIN_HEIGHT);
+}
+
+#[test]
+fn show_lock_shows_banner_blocks_audio_settings_and_warns_about_modified_rate() {
+    let mut f = fixture("lock_hard");
+    // Cambiamos la velocidad de la cue 1 a 1.15x y esperamos a que el daemon la confirme.
+    app_mut(&mut f.h).set_speed(1.15);
+    pump(&mut f.h, "rate 1.15 guardado", |a| a.model.summary(1).is_some_and(|c| (c.rate - 1.15).abs() < 1e-2));
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::ToggleLock);
+    for _ in 0..4 {
+        f.h.step();
+    }
+    assert!(app(&f.h).locked);
+    assert!(f.h.query_by_label("MODO FUNCIÓN (BLOQUEADO)").is_some(), "banner de modo función visible");
+    assert!(app(&f.h).toasts.iter().any(|t| t.text.contains("1.15x")), "avisa al bloquear que hay velocidad modificada");
+    // Con bloqueo y audio sano, abrir Configuración de audio se rechaza.
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::ChooseAudioOutput);
+    assert!(!app(&f.h).audio_ui.open, "bloqueo impide abrir Configuración de audio");
+    // Pero en emergencia (SIN AUDIO), sí deja abrirla.
+    app_mut(&mut f.h).audio_lost = Some("placa desconectada".into());
+    app_mut(&mut f.h).apply_for_test(crate::views::Action::ChooseAudioOutput);
+    assert!(app(&f.h).audio_ui.open, "en emergencia SIN AUDIO se puede cambiar de salida");
+}
+
+#[test]
+fn carts_toolbar_highlights_while_playing_clears_on_panic_and_editor_sits_beside_grid_at_768p() {
+    let mut f = fixture("carts_768");
+    let fx = write_test_wav("click-carts-768", 1, 96_000, 48_000, |_, _| 0.2);
+    f.h.set_size(egui::vec2(1366.0, 768.0));
+    for _ in 0..4 {
+        f.h.step();
+    }
+    f.h.get_by_label("Carts (F3)").click();
+    pump(&mut f.h, "Carts abierto desde toolbar", |a| a.carts.open);
+    {
+        let a = app_mut(&mut f.h);
+        a.carts.bank = qlab_protocol::cue_dto::CartBank::default().clamped();
+        a.carts.bank.pads[0] = cart_pad(&fx, "Foyer", "1", qlab_protocol::cue_dto::CartMode::Toggle);
+        a.carts.editing = Some(0);
+        a.cart_edited_for_test(0);
+    }
+    pump(&mut f.h, "pad preparado", |a| a.carts.duration[0].is_some());
+    for _ in 0..4 {
+        f.h.step();
+    }
+    // El editor está a la derecha de la cuadrícula y no desborda 768p en vertical.
+    let pad4 = f.h.get_by_label("Pad 4").rect();
+    let vaciar = f.h.get_by_label("Vaciar pad").rect();
+    assert!(vaciar.left() > pad4.right(), "el editor va a la derecha de la cuadrícula 4x4: {vaciar:?} vs {pad4:?}");
+    assert!(vaciar.bottom() <= 768.0, "el editor entra completo en 768p: {vaciar:?}");
+    // Al disparar el pad, el botón de la barra superior resalta «Carts · SUENA» y PANIC limpia el estado.
+    app_mut(&mut f.h).cart_press(0);
+    for _ in 0..3 {
+        f.h.step();
+    }
+    assert!(f.h.query_by_label("Carts · SUENA").is_some(), "toolbar muestra Carts · SUENA");
+    app_mut(&mut f.h).panic_press();
+    for _ in 0..3 {
+        f.h.step();
+    }
+    assert!(!app(&f.h).carts.playing(0, std::time::Instant::now()), "PANIC marca el pad como detenido");
+    assert!(f.h.query_by_label("Carts (F3)").is_some(), "toolbar vuelve a Carts (F3)");
+    let _ = std::fs::remove_file(fx);
 }
